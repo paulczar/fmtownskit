@@ -11,6 +11,8 @@ imposes on every program, independent of any particular title:
              IRQs, machine ids, RUN386's selectors, DOS/Phar Lap names
     x86map   a program's 32-bit code: extents, functions, and every site
              where it reaches the system (needs capstone)
+    mamedump a running machine frozen by MAME (CPU state, physical RAM):
+             paging, the GDT and LDT, bytes found
 
 Run as `python -m fmtownskit.<module>` from a port's root, where the kit is
 a submodule. Pure Python 3.8+; game-specific knowledge belongs in the

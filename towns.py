@@ -108,15 +108,46 @@ MACHINE_ID = {1: 'FM Towns 1/2', 2: 'FM Towns 1F/2F/1H/2H', 3: 'FM Towns 10F/20F
               12: 'MX', 13: 'ME', 15: 'MF/Fresh TV', 16: 'SN', 17: 'HA/HB/HC',
               0x4A: 'FM Towns Marty'}
 
-# Selectors RUN386 gives a program, as programs use them. Inferred from use
-# (the program loads the selector and touches what is there); to be read in
-# RUN386's own descriptor setup, where the Towns/Marty difference lives.
+# Selectors as RUN386 1.2aJ L50 sets them up, read from the descriptor
+# tables of a running Towns and a running Marty (`mamedump`): the same
+# linear bases on both. RUN386 runs with paging on, on both machines; on
+# the Towns the hardware's pages map 1:1, on the Marty they map to its
+# 24-bit addresses (PAGES_MARTY), so a program sees one machine.
+# LDT (TI=1) are the program's; GDT ones are the system's, open to it.
 SELECTORS = {
-    0x0014: 'the program\'s data (Phar Lap: application data, also SS)',
-    0x0104: 'VRAM (inferred: pixel writes)',
-    0x0110: 'TBIOS entry table (inferred: far calls through fs:[n])',
-    0x0130: 'sprite RAM (inferred: 8-byte records up to 0x2000, sprite attributes)',
+    0x000C: 'the program\'s code (LDT; base 0x200000 for the first program, limit its image + stack)',
+    0x0014: 'the program\'s data, also SS (LDT; the same base as 0x0C)',
+    0x001C: 'VRAM, layered (LDT; Phar Lap\'s "screen")',
+    0x0024: 'the PSP (LDT; 256 bytes in the first MB: inferred by size, as Phar Lap documents it)',
+    0x002C: 'the environment (LDT; inferred, as Phar Lap documents it)',
+    0x0034: 'the first megabyte (LDT)',
+    0x0040: 'all RAM (GDT; limit the RAM size - 1)',
+    0x0048: 'VRAM, layered (GDT)',
+    0x0060: 'the first megabyte (GDT)',
+    0x0100: 'system ROM, code (GDT; 0xFFFC0000)',
+    0x0104: 'VRAM, layered (LDT; 0x80000000, 512 KB)',
+    0x0108: 'system ROM, data (GDT)',
+    0x010C: 'VRAM, single-layer (LDT; 0x80100000, 512 KB)',
+    0x0110: 'TBIOS code (GDT; base 0x100000, limit TBIOS\'s size - 1): its entry table at 0',
+    0x0114: 'sprite RAM (LDT; 0x81000000, 128 KB)',
+    0x0118: 'TBIOS data (GDT; the same base and limit as 0x110)',
+    0x0120: 'VRAM, layered (GDT)',
+    0x0128: 'VRAM, single-layer (GDT)',
+    0x0130: 'sprite RAM (GDT; 0x81000000, 128 KB)',
+    0x0138: 'font ROM (GDT; 0xC2100000)',
+    0x0140: 'PCM wave RAM window (GDT; 0xC2200000, 4 KB)',
+    0x0148: 'OS ROM (GDT; 0xC2000000)',
 }
+# int 21h AH=48h hands a program a new LDT selector per block (0x44, 0x4C,
+# ... upward), its base above the program's in linear memory.
+
+# The Marty's page mappings for the Towns' high addresses (linear -> physical, size).
+PAGES_MARTY = [
+    (0x80000000, 0x00A00000, 0x80000), (0x80100000, 0x00B00000, 0x80000),
+    (0x81000000, 0x00C00000, 0x20000), (0xC2000000, 0x00600000, 0x80000),
+    (0xC2100000, 0x00F00000, 0x42000), (0xC2200000, 0x00F80000, 0x1000),
+    (0xFFFC0000, 0x00FC0000, 0x40000),
+]
 
 # Software interrupts a Towns program may raise. 21h is DOS (and the
 # extender's own functions at AH=25h); 93h is the Towns disk BIOS, whose

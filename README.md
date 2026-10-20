@@ -28,6 +28,16 @@ as a parameter (`towns.MEMORY['towns']`, `['marty']`), never a fork. A
 "Marty title" and a Towns title that runs on the Marty are the same kind of
 program to the kit.
 
+And for a program run by RUN386 the two are **one machine**: RUN386 runs
+with paging on, on both, and on the Marty its pages put the Towns' high
+addresses back where a Towns has them (`towns.PAGES_MARTY`); the
+descriptors are the same on both, base for base (read from both machines
+running, `mamedump`). What does differ is the TBIOS: on the Towns it is the
+disc's `TBIOS.BIN`, on the Marty a build of the same version from the
+Marty's own ROM, its modules from the sprite one on 16 bytes lower, with 8
+KB more. A port that runs
+the disc's TBIOS runs the Towns path, and needs no ROM.
+
 ## Ports built on it
 
 | Port | Game | What it asked of fmtownskit |
@@ -48,7 +58,13 @@ python -m fmtownskit.exp build/disc/GAME.EXP              # the P3 header
 python -m fmtownskit.x86map build/disc/GAME.EXP           # code extents, system sites
 python -m fmtownskit.x86map build/disc/GAME.EXP --seed 103e2 --dis 103e2 -n 40
 python -m fmtownskit.towns                                # both machines' maps, the ports
+python -m fmtownskit.mamedump DUMPDIR [--pages]           # a running machine's GDT, LDT, paging
+python -m fmtownskit.mamedump DUMPDIR --find FILE:OFF:LEN # where those bytes sit in RAM
 ```
+
+A dump is MAME's CPU state and physical RAM (`state.txt`, `ram.bin`) at a
+moment the CPU is in protected mode with paging on; a port's oracle writes
+it with a Lua script.
 
 ## What a Towns CD is
 
@@ -85,7 +101,7 @@ one disc so far (see *Checks*):
 |---|---|---|---|
 | 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3) | MZ executables and RUN386's own loader; TBIOS.BIN's modules as a format; floppy images (.hdm) for the discs that come with a user disk |
 | 2. Extract | Turn standard formats into standard files | `disc --extract`, `disc --wav` | the TBIOS-level formats games share (sprite patterns, the sound BIOS's data), when a second game confirms them |
-| 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers) | the TBIOS's own functions named by module and AH; RUN386's selector setup on each machine |
+| 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers), `mamedump` (a running machine: GDT, LDT, paging, bytes found) | the TBIOS's own functions named by module and AH |
 | 4. Translate | Turn 386 code into C++ | -- | an IA-32 decoder (the 386's instruction set, 16- and 32-bit operand and address sizes, segment overrides), a reference interpreter checked against unicorn, discovery, the emitter, a self-test |
 | 5. Runtime | What an engine links | -- | the machine: memory and selectors for both models, VRAM layers and the CRTC, the sprite controller, the YM3438 and RF5C68, the CD with its CD-DA, the PICs and timers, the pad; DOS and Phar Lap at their interrupt boundary; TBIOS run from the disc's own code |
 
@@ -108,6 +124,8 @@ one disc so far (see *Checks*):
 | `disc` | The Queen of Duellist (Rev A; Redump's split dump, 10 tracks): every track's file matches the CRC32 MAME's software list gives, and the CHD made from the sheet has its SHA-1. The data track: ISO 9660, 2,932 blocks of 6,750 sectors (the rest zero), 167 files in 4 directories, extracted byte for byte as a separate reader does; nine CD-DA tracks whose pregaps (345 to 815 sectors) hold audio in seven of them |
 | `exp` | the same disc's `DUEL.EXP`: a level-1 P3 image of 73,495 bytes at 0x200, entry 0xA7F0, stack top 0x13F20, no relocations |
 | `towns` | the memory maps, ports, IRQs and machine ids as MAME's fmtowns driver has them; confirmed by a game's code: the pad ports 0x4D0/0x4D2/0x4D6, the CRTC's 0x440/0x442/0x443, the sprite controller's 0x450/0x452, the sound status at 0x4E9 and IRQ13 as int 4Dh (slave PIC at 0x48) |
+| `towns.SELECTORS`, `PAGES_MARTY` | the descriptor tables of MAME's `fmtowns` and `fmtmarty` running The Queen of Duellist, 20 seconds in: GDT and LDT the same base for base on both (the TBIOS's limit aside, 0x16FFF and 0x18FFF), paging on in both, the Towns' high pages 1:1, the Marty's at the seven mappings listed; the game's image at linear 0x200000 on both (physical 0x49000 and 0x47000), its code byte for byte the file's |
+| `mamedump` | the same two dumps: descriptors, the page walk, the image and the TBIOS found in RAM (the Towns' TBIOS the disc's `TBIOS.BIN` but for 265 bytes of data; the Marty's found in its ROM `MAR_EX1` at 0x19C00) |
 | `x86map` | `DUEL.EXP`: 154 functions from the entry (157 with three seeds), 27,124 bytes of code in 0xA7F0-0x11B98, every site named (33 `int`, 18 `out`, 6 `in`, 9 far calls into TBIOS, 48 selector loads -- of 0x14, 0x104, 0x110 and 0x130 only, a 32-bit register's low half included), 12 indirect transfers listed |
 
 ## Known gaps
@@ -115,9 +133,9 @@ one disc so far (see *Checks*):
 * **One disc.** Everything above is what one game shows; the next will add
   to it, and some of what is written here as the Towns' way may turn out to
   be that game's.
-* **RUN386's selectors** are named from their use; the extender builds its
-  descriptors at run time, which is where the Towns and the Marty differ,
-  and that code is still to read.
+* **RUN386's selectors** are read from two machines running, not from
+  RUN386's own code; the blocks `int 21h AH=48h` hands out (LDT 0x44 up)
+  are placed by it as the dumps show, not yet by a rule.
 * **Phar Lap's function names** (`towns.PHARLAP`) are the extender's
   documented ones and have not yet been checked against RUN386's dispatch.
 * **The P3 header** past the image fields (the extra pages, the run-time
