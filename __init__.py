@@ -13,6 +13,10 @@ imposes on every program, independent of any particular title:
              where it reaches the system (needs capstone)
     mamedump a running machine frozen by MAME (CPU state, physical RAM):
              paging, the GDT and LDT, bytes found
+    i386     the 386's integer instruction set, decoded (checked against capstone)
+    i386emu  a 386 interpreter, the reference (checked against unicorn)
+    recomp   discovery, the emitter (386 to C++), the self-test's vectors
+    runtime/ C++20 for the recompiled code: the CPU, memory, flags, modules
 
 Run as `python -m fmtownskit.<module>` from a port's root, where the kit is
 a submodule. Pure Python 3.8+; game-specific knowledge belongs in the

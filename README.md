@@ -42,7 +42,7 @@ the disc's TBIOS runs the Towns path, and needs no ROM.
 
 | Port | Game | What it asked of fmtownskit |
 |---|---|---|
-| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`) |
+| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS |
 
 ## Using it
 
@@ -60,6 +60,18 @@ python -m fmtownskit.x86map build/disc/GAME.EXP --seed 103e2 --dis 103e2 -n 40
 python -m fmtownskit.towns                                # both machines' maps, the ports
 python -m fmtownskit.mamedump DUMPDIR [--pages]           # a running machine's GDT, LDT, paging
 python -m fmtownskit.mamedump DUMPDIR --find FILE:OFF:LEN # where those bytes sit in RAM
+python -m fmtownskit.x86map TBIOS.BIN --raw --far-table 20:100   # a raw image from its far-pointer table
+python -m fmtownskit.i386 GAME.EXP --dis a7f0 -n 20       # the 386 decoder
+python -m fmtownskit.i386 GAME.EXP --check                # every reached instruction against capstone
+python -m fmtownskit.i386 --sweep 300000                  # random bytes against capstone
+python -m fmtownskit.i386emu --test                       # the interpreter's known answers
+python -m fmtownskit.i386emu --check GAME.EXP --states 4  # every reached instruction against unicorn
+python -m fmtownskit.i386emu --sweep 100000               # random instructions against unicorn
+python -m fmtownskit.recomp.discover GAME.EXP --seed 103e2 --report     # functions, tables, conflicts
+python -m fmtownskit.recomp --out build/recomp --exp game=GAME.EXP@0c+SEEDS \
+    --raw tbios=TBIOS.BIN@110:20-100 --optest --selftest 3                # C++, a module per program
+cmake -S build/recomp -B build/recomp/b -G Ninja -DCMAKE_CXX_COMPILER=clang++
+ninja -C build/recomp/b && build/recomp/b/selftest build/recomp/selftest/*.txt
 ```
 
 A dump is MAME's CPU state and physical RAM (`state.txt`, `ram.bin`) at a
@@ -102,12 +114,14 @@ one disc so far (see *Checks*):
 | 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3) | MZ executables and RUN386's own loader; TBIOS.BIN's modules as a format; floppy images (.hdm) for the discs that come with a user disk |
 | 2. Extract | Turn standard formats into standard files | `disc --extract`, `disc --wav` | the TBIOS-level formats games share (sprite patterns, the sound BIOS's data), when a second game confirms them |
 | 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers), `mamedump` (a running machine: GDT, LDT, paging, bytes found) | the TBIOS's own functions named by module and AH |
-| 4. Translate | Turn 386 code into C++ | -- | an IA-32 decoder (the 386's instruction set, 16- and 32-bit operand and address sizes, segment overrides), a reference interpreter checked against unicorn, discovery, the emitter, a self-test |
-| 5. Runtime | What an engine links | -- | the machine: memory and selectors for both models, VRAM layers and the CRTC, the sprite controller, the YM3438 and RF5C68, the CD with its CD-DA, the PICs and timers, the pad; DOS and Phar Lap at their interrupt boundary; TBIOS run from the disc's own code |
+| 4. Translate | Turn 386 code into C++ | `i386` (the 386's integer instruction set exactly: 16- and 32-bit operand and address sizes, segment overrides, REP/LOCK, ModRM/SIB, the 0F map; later CPUs' instructions and the x87 refused with a reason), `i386emu` (an interpreter: the reference, its undefined flags listed), `recomp.discover` (functions and their bodies, jump tables bounded by the guard that really guards them -- or by `setcc`, `and` --, tables with no bound read until an entry's code conflicts or is refused, the descent rerun until clean), `recomp.emit` and `python -m fmtownskit.recomp` (C++ per function, a module per program keyed by its code selector, calls as C++ calls with the return checked and unwound, jump tables as switches on the entry read, the 386's clocks a block at a time), `recomp.selftest` (the interpreter records, the C++ replays; the optest: every instruction form, one-instruction functions) | flags only where read; the clocks held against the oracle |
+| 5. Runtime | What an engine links | for recompiled code (C++20): `x86.h` (the CPU, linear memory as a table of 4 KB pages, the flags), `x86_flags` (shifts, multiply and divide, bits, BCD, strings, POPF, ENTER as `i386emu` does them), `x86_core` (modules, lookup by code selector), `x86_selftest` | the machine: memory and selectors for both models, VRAM layers and the CRTC, the sprite controller, the YM3438 and RF5C68, the CD with its CD-DA, the PICs and timers, the pad; DOS and Phar Lap at their interrupt boundary; TBIOS run from the disc's own code |
 
 ## Principles
 
-* Pure Python 3.8+, no dependencies, except `x86map` (capstone).
+* Pure Python 3.8+, no dependencies, except `x86map` (capstone); `i386 --check`
+  is held against capstone and `i386emu --check` against unicorn. The
+  recompiled code's runtime is C++20, built with CMake, Ninja and clang.
 * Every claim is checked on a real disc or in the running game before it
   goes in. What no disc shows is refused with an error rather than guessed.
   The hardware tables in `towns` are read from MAME's driver (not copied)
@@ -126,6 +140,10 @@ one disc so far (see *Checks*):
 | `towns` | the memory maps, ports, IRQs and machine ids as MAME's fmtowns driver has them; confirmed by a game's code: the pad ports 0x4D0/0x4D2/0x4D6, the CRTC's 0x440/0x442/0x443, the sprite controller's 0x450/0x452, the sound status at 0x4E9 and IRQ13 as int 4Dh (slave PIC at 0x48) |
 | `towns.SELECTORS`, `PAGES_MARTY` | the descriptor tables of MAME's `fmtowns` and `fmtmarty` running The Queen of Duellist, 20 seconds in: GDT and LDT the same base for base on both (the TBIOS's limit aside, 0x16FFF and 0x18FFF), paging on in both, the Towns' high pages 1:1, the Marty's at the seven mappings listed; the game's image at linear 0x200000 on both (physical 0x49000 and 0x47000), its code byte for byte the file's |
 | `mamedump` | the same two dumps: descriptors, the page walk, the image and the TBIOS found in RAM (the Towns' TBIOS the disc's `TBIOS.BIN` but for 265 bytes of data; the Marty's found in its ROM `MAR_EX1` at 0x19C00) |
+| `i386` | every instruction discovery reaches in `DUEL.EXP` (7,903) and `TBIOS.BIN` (16,120) against capstone, field by field: 0 differ. 300,000 random byte sequences: 281,740 agree, 11 differ and each is capstone's error (a 67h `jmp rel32` truncated to 16 bits, a REP or LOCK prefix dropped, the test registers TR6/TR7 unknown) |
+| `i386emu` | 10 known answers; against unicorn from random states, memory mapped on demand: 30,020 vectors over `DUEL.EXP`'s instructions, 46,545 over TBIOS's, 169,696 over random instructions -- 0 differ. Set aside: the machine's instructions, the flags Intel leaves undefined, and unicorn's own two errors (`ret imm16` sign-extended; F6/F7 /1, TEST's second encoding, refused) |
+| `recomp.discover` | `DUEL.EXP`: 157 functions, 0 conflicts. `TBIOS.BIN` from its far-pointer table: 355 functions, 14,385 instructions, 33 jump tables (11 bounded), 0 refusals, 0 conflicts -- where a first descent had 260 conflicts and 14 refusals from a table bounded by a comparison of a register rewritten before the jump |
+| `recomp.emit`, `recomp.selftest` | the optest: 7,464 one-instruction functions (every distinct instruction of both programs and of a random sweep), 22,340 vectors from `i386emu`, replayed on the C++: 0 failures. The programs' own functions, 3 random states each: `DUEL.EXP` 135 vectors, TBIOS 682, 0 failures. Every generated file compiles with clang |
 | `x86map` | `DUEL.EXP`: 154 functions from the entry (157 with three seeds), 27,124 bytes of code in 0xA7F0-0x11B98, every site named (33 `int`, 18 `out`, 6 `in`, 9 far calls into TBIOS, 48 selector loads -- of 0x14, 0x104, 0x110 and 0x130 only, a 32-bit register's low half included), 12 indirect transfers listed |
 
 ## Known gaps
@@ -138,6 +156,14 @@ one disc so far (see *Checks*):
   are placed by it as the dumps show, not yet by a rule.
 * **Phar Lap's function names** (`towns.PHARLAP`) are the extender's
   documented ones and have not yet been checked against RUN386's dispatch.
+* **The runtime has the CPU, not yet the machine**: no VRAM, sprites,
+  sound, CD, timers or DOS behind `x86_int`, `x86_in`/`x86_out` and
+  `x86_load_seg` -- the self-test's stub stops there.
+* **The emitter computes every flag it sets** (no liveness pass yet), and
+  its clocks are the datasheet's, one figure a form, not yet held against
+  the oracle.
+* **Self-modifying code** is not met (the first game's code is the file's,
+  byte for byte, in RAM): the recompiled code would not see it.
 * **The P3 header** past the image fields (the extra pages, the run-time
   parameters) is read but not yet understood: the first disc's says
   0x2009 extra pages minimum and maximum.

@@ -86,6 +86,7 @@ class Map:
         self.functions = {entry} | set(seeds)
         self.targets = set()               # branch targets: where constants are forgotten
         self.indirect = []
+        self.tables = []                   # (site, table address, entries, bounded)
         self.bad = []
         self._descend([entry] + list(seeds))
         self.sites = self._sites()
@@ -109,15 +110,27 @@ class Map:
                 m = ins.mnemonic
                 ops = ins.operands
                 imm = ops[0].imm if ops and ops[0].type == X.X86_OP_IMM else None
+                table = self._table(pc, ins) if imm is None and m in ('call', 'jmp') else None
+                if table is not None:
+                    for t in table:
+                        if t == 0:
+                            continue
+                        if m == 'call' and t not in self.functions:
+                            self.functions.add(t)
+                        elif m == 'jmp':
+                            self.targets.add(t)
+                        work.append(t)
                 if m == 'call':
                     if imm is None:
-                        self.indirect.append(pc)
+                        if table is None:
+                            self.indirect.append(pc)
                     elif imm not in self.functions:
                         self.functions.add(imm)
                         work.append(imm)
                 elif m.startswith('j') or m.startswith('loop') or m in ('jecxz', 'jcxz'):
                     if imm is None:
-                        self.indirect.append(pc)
+                        if table is None:
+                            self.indirect.append(pc)
                     else:
                         self.targets.add(imm)
                         work.append(imm)
@@ -126,6 +139,49 @@ class Map:
                 elif m in ('ret', 'retf', 'iret', 'iretd', 'hlt', 'ljmp'):
                     break
                 pc += ins.size
+
+    def _table(self, pc, ins):
+        """A transfer through `[index*4 + table]`: the table's entries, or None.
+
+        The bound is the `cmp index8/index, N` and `ja` just before (N+1
+        entries). With none, entries are read while each is 0 (a hole) or an
+        address inside the image that decodes, up to 256."""
+        if not ins.operands or ins.operands[0].type != X.X86_OP_MEM:
+            return None
+        mem = ins.operands[0].mem
+        if mem.base != 0 or mem.index == 0 or mem.scale != 4:
+            return None
+        tbl = mem.disp & 0xFFFFFFFF
+        if not 0 <= tbl - self.base < len(self.img):
+            return None
+        idx = ins.reg_name(mem.index)
+        low = {'eax': ('al', 'ah', 'ax'), 'ebx': ('bl', 'bh', 'bx'), 'ecx': ('cl', 'ch', 'cx'),
+               'edx': ('dl', 'dh', 'dx'), 'esi': ('si',), 'edi': ('di',), 'ebp': ('bp',)}
+        # the index's source: `movzx idx, r8` just before names the register compared
+        names = {idx} | set(low.get(idx, ()))
+        bound = None
+        back = [self.insn[a] for a in sorted(a for a in self.insn if pc - 48 <= a < pc)]
+        for p in back:
+            if p.mnemonic == 'movzx' and p.op_str.split(',')[0] == idx:
+                names.add(p.op_str.split(', ')[1])
+        for p, q in zip(back, back[1:]):
+            if p.mnemonic == 'cmp' and q.mnemonic in ('ja', 'jae') and p.op_str.split(', ')[0] in names:
+                try:
+                    n = int(p.op_str.split(', ')[1], 0)
+                except ValueError:
+                    continue
+                bound = n + 1 if q.mnemonic == 'ja' else n
+        out = []
+        for k in range(bound if bound is not None else 256):
+            off = tbl - self.base + 4 * k
+            if off + 4 > len(self.img):
+                break
+            v = int.from_bytes(self.img[off:off + 4], 'little')
+            if bound is None and v != 0 and (not 0 <= v - self.base < len(self.img) or self._at(v) is None):
+                break
+            out.append(v)
+        self.tables.append((pc, tbl, len(out), bound is not None))
+        return out
 
     def _sites(self):
         out = []
@@ -240,27 +296,52 @@ def name_site(s):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('file', help='a P3 .EXP')
+    ap.add_argument('file', help='a P3 .EXP, or with --raw any flat image')
+    ap.add_argument('--raw', action='store_true', help='the file is a flat image (--base, entries from --seed)')
+    ap.add_argument('--base', default='0', help='with --raw: the address of its first byte, hex')
+    ap.add_argument('--far-table', metavar='FROM:TO',
+                    help='with --raw: seed every far pointer (offset, selector) stored in FROM-TO, hex')
     ap.add_argument('--seed', default='', help='more entries, hex, comma-separated')
     ap.add_argument('--dis', metavar='ADDR')
     ap.add_argument('-n', type=int, default=30)
     ap.add_argument('--functions', action='store_true')
+    ap.add_argument('--mnemonics', action='store_true', help='how often each instruction occurs')
     a = ap.parse_args(argv)
-    e = expmod.Exp(open(a.file, 'rb').read())
+    data = open(a.file, 'rb').read()
     seeds = [int(x, 16) for x in a.seed.split(',') if x]
+    if a.raw:
+        image, base = data, int(a.base, 16)
+        if a.far_table:
+            lo, hi = (int(x, 16) for x in a.far_table.split(':'))
+            for o in range(lo, hi, 8):
+                off = int.from_bytes(image[o:o + 4], 'little')
+                if off:
+                    seeds.append(off)
+        if not seeds:
+            sys.exit('--raw needs entries (--seed or --far-table)')
+        entry, seeds = seeds[0], seeds[1:]
+    else:
+        e = expmod.Exp(data)
+        image, base, entry = e.image, e.base_offset, e.eip
     if a.dis:
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         addr = int(a.dis, 16)
-        for i, ins in enumerate(md.disasm(e.image[addr - e.base_offset:], addr)):
+        for i, ins in enumerate(md.disasm(image[addr - base:], addr)):
             if i >= a.n:
                 break
             print('  %06x  %-22s %s %s' % (ins.address, ins.bytes.hex(), ins.mnemonic, ins.op_str))
         return
-    m = Map(e.image, e.base_offset, e.eip, seeds)
+    m = Map(image, base, entry, seeds)
     ext = m.extents()
     code = sum(i.size for i in m.insn.values())
     print('%d functions, %d instructions, %d bytes of code in %d extents (%#x-%#x), image %d bytes'
-          % (len(m.functions), len(m.insn), code, len(ext), ext[0][0], ext[-1][1], len(e.image)))
+          % (len(m.functions), len(m.insn), code, len(ext), ext[0][0], ext[-1][1], len(image)))
+    for site, tbl, n, bounded in m.tables:
+        print('table at %#x for %#x: %d entries (%s)' % (tbl, site, n, 'bounded by a cmp' if bounded else 'read'))
+    if a.mnemonics:
+        hist = collections.Counter(i.mnemonic for i in m.insn.values())
+        print(' '.join('%s:%d' % kv for kv in sorted(hist.items(), key=lambda kv: -kv[1])))
+        return
     if m.bad:
         print('undecodable at', ' '.join('%#x' % b for b in m.bad))
     if a.functions:
