@@ -42,7 +42,7 @@ the disc's TBIOS runs the Towns path, and needs no ROM.
 
 | Port | Game | What it asked of fmtownskit |
 |---|---|---|
-| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS |
+| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS; the machine under them (`runtime/towns*`): memory and selectors as RUN386 leaves them, far calls into TBIOS, the program's interrupt handlers, VSYNC, the CRTC, palettes, VRAM and the sprite controller, the RF5C68's channels, DOS, Phar Lap and the CD BIOS over the disc image -- the logo, the opening and the title drawn as MAME draws them, pixel for pixel |
 
 ## Using it
 
@@ -115,7 +115,7 @@ one disc so far (see *Checks*):
 | 2. Extract | Turn standard formats into standard files | `disc --extract`, `disc --wav` | the TBIOS-level formats games share (sprite patterns, the sound BIOS's data), when a second game confirms them |
 | 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers), `mamedump` (a running machine: GDT, LDT, paging, bytes found) | the TBIOS's own functions named by module and AH |
 | 4. Translate | Turn 386 code into C++ | `i386` (the 386's integer instruction set exactly: 16- and 32-bit operand and address sizes, segment overrides, REP/LOCK, ModRM/SIB, the 0F map; later CPUs' instructions and the x87 refused with a reason), `i386emu` (an interpreter: the reference, its undefined flags listed), `recomp.discover` (functions and their bodies, jump tables bounded by the guard that really guards them -- or by `setcc`, `and` --, tables with no bound read until an entry's code conflicts or is refused, the descent rerun until clean), `recomp.emit` and `python -m fmtownskit.recomp` (C++ per function, a module per program keyed by its code selector, calls as C++ calls with the return checked and unwound, jump tables as switches on the entry read, the 386's clocks a block at a time), `recomp.selftest` (the interpreter records, the C++ replays; the optest: every instruction form, one-instruction functions) | flags only where read; the clocks held against the oracle |
-| 5. Runtime | What an engine links | for recompiled code (C++20): `x86.h` (the CPU, linear memory as a table of 4 KB pages, the flags), `x86_flags` (shifts, multiply and divide, bits, BCD, strings, POPF, ENTER as `i386emu` does them), `x86_core` (modules, lookup by code selector), `x86_selftest` | the machine: memory and selectors for both models, VRAM layers and the CRTC, the sprite controller, the YM3438 and RF5C68, the CD with its CD-DA, the PICs and timers, the pad; DOS and Phar Lap at their interrupt boundary; TBIOS run from the disc's own code |
+| 5. Runtime | What an engine links | for recompiled code (C++20): `x86.h` (the CPU, linear memory as a table of 4 KB pages, the flags), `x86_flags` (shifts, multiply and divide, bits, BCD, strings, POPF, ENTER as `i386emu` does them), `x86_core` (modules, lookup by code selector), `x86_selftest`; the machine (`towns.h`, `towns.cmake`): `towns_mem` (linear memory as RUN386 leaves it, the descriptors, VRAM's mask and windows, the PCM wave RAM's bank, the font ROM; the state TownsOS hands over), `towns_cpu` (far calls and returns between a program and TBIOS, calls by code selector, `int`, interrupts taken at safe points), `towns_io` (the ports, level-triggered PICs, VSYNC and the beam, the microsecond counter, the sprite controller, the RF5C68's channels and its interrupt), `towns_video` (sprites drawn and the frame composed as MAME's `screen_update`, PNG), `towns_dos` (DOS and Phar Lap over the disc image, the CD BIOS's TOC, play and stop, RUN386's start of a P3 program), `towns_disc` (cue sheets, ISO 9660, audio sectors) | the YM3438 and the RF5C68 heard, the CD-DA played, a window and the pad; the Marty's speed and 2 MB for its oracle |
 
 ## Principles
 
@@ -144,6 +144,7 @@ one disc so far (see *Checks*):
 | `i386emu` | 10 known answers; against unicorn from random states, memory mapped on demand: 30,020 vectors over `DUEL.EXP`'s instructions, 46,545 over TBIOS's, 169,696 over random instructions -- 0 differ. Set aside: the machine's instructions, the flags Intel leaves undefined, and unicorn's own two errors (`ret imm16` sign-extended; F6/F7 /1, TEST's second encoding, refused) |
 | `recomp.discover` | `DUEL.EXP`: 157 functions, 0 conflicts. `TBIOS.BIN` from its far-pointer table: 355 functions, 14,385 instructions, 33 jump tables (11 bounded), 0 refusals, 0 conflicts -- where a first descent had 260 conflicts and 14 refusals from a table bounded by a comparison of a register rewritten before the jump |
 | `recomp.emit`, `recomp.selftest` | the optest: 7,464 one-instruction functions (every distinct instruction of both programs and of a random sweep), 22,340 vectors from `i386emu`, replayed on the C++: 0 failures. The programs' own functions, 3 random states each: `DUEL.EXP` 135 vectors, TBIOS 682, 0 failures. Every generated file compiles with clang |
+| `runtime/towns*` | The Queen of Duellist run from its first instruction, the state at that instruction read on MAME's `fmtowns` (registers, RAM, the PICs' save items, the CRTC, video registers and palettes through the ports): memory blocks, selectors and bases as RUN386 gave them; TBIOS set up by the game's own calls; the logo, its fades, the opening and the title screen with its menu (the font ROM's text) the same as MAME's snapshots pixel for pixel, at every moment tried; the attract fight run, its sprites, HUD and backgrounds drawn |
 | `x86map` | `DUEL.EXP`: 154 functions from the entry (157 with three seeds), 27,124 bytes of code in 0xA7F0-0x11B98, every site named (33 `int`, 18 `out`, 6 `in`, 9 far calls into TBIOS, 48 selector loads -- of 0x14, 0x104, 0x110 and 0x130 only, a 32-bit register's low half included), 12 indirect transfers listed |
 
 ## Known gaps
@@ -156,9 +157,15 @@ one disc so far (see *Checks*):
   are placed by it as the dumps show, not yet by a rule.
 * **Phar Lap's function names** (`towns.PHARLAP`) are the extender's
   documented ones and have not yet been checked against RUN386's dispatch.
-* **The runtime has the CPU, not yet the machine**: no VRAM, sprites,
-  sound, CD, timers or DOS behind `x86_int`, `x86_in`/`x86_out` and
-  `x86_load_seg` -- the self-test's stub stops there.
+* **The machine is silent and blind to input**: the YM3438 is registers
+  only (never busy, no timers), the RF5C68's samples are kept but not played,
+  the CD-DA is asked for and not played, the pad reads nothing pressed. The
+  ports are what one game and its TBIOS touch; anything else is logged once.
+* **Loads take no time**: a file is read from the image at once, where the
+  Towns reads its CD at the drive's pace -- the same pictures come sooner
+  than on the oracle, and what hangs on timing (a computer's play) drifts.
+* **Interrupts are taken at safe points** (backward jumps; the budget set
+  to the next event), not between any two instructions.
 * **The emitter computes every flag it sets** (no liveness pass yet), and
   its clocks are the datasheet's, one figure a form, not yet held against
   the oracle.
