@@ -10,7 +10,9 @@
 #include "towns.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 
 namespace towns {
@@ -47,6 +49,116 @@ static bool on_disc(Machine& m, const std::string& name, std::string& path) {
     return false;
 }
 
+// ---- find first, find next (4Eh, 4Fh) -------------------------------------------------------
+// The DTA as the Towns' DOS fills it (read in the oracle's RAM after a find on the CD): [0] the
+// drive (the CD's 'Q' | 80h, as a redirector marks it; a host drive its number from 1), [1..11]
+// the name searched as 8.3 with '?', [0Ch] the attributes asked; then, here, [0Dh] the next
+// entry and [0Fh] the directory (an index into search_dirs: DOS keeps its own state there);
+// [15h] the attributes found (a file on the CD 01h, read-only), [16h] the time, [18h] the date
+// (the ISO record's), [1Ah] the size, [1Eh] the name, 13 bytes. Not found: CF and AX=12h.
+struct DirEntry { std::string name; uint8_t attr; uint16_t time, date; uint32_t size; };
+
+static bool list_dir(Machine& m, const std::string& key, std::vector<DirEntry>& out) {
+    out.clear();
+    std::string path = key.substr(2);
+    if (key[0] == 'Q') {
+        std::vector<DiscFile> fs;
+        if (!m.disc.list(path, fs)) return false;
+        for (const auto& f : fs)
+            out.push_back({f.name, (uint8_t)(f.dir ? 0x11 : 0x01), f.time, f.date, f.dir ? 0 : f.size});
+        return true;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_directory(path, ec)) return false;
+    for (const auto& e : fs::directory_iterator(path, ec)) {
+        DirEntry d{e.path().filename().string(), (uint8_t)(e.is_directory() ? 0x10 : 0x20), 0, 0, 0};
+        if (!e.is_directory()) d.size = (uint32_t)e.file_size(ec);
+        auto t = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(e.last_write_time(ec)));
+        if (const std::tm* lt = std::localtime(&t)) {
+            d.time = (uint16_t)(lt->tm_hour << 11 | lt->tm_min << 5 | lt->tm_sec / 2);
+            d.date = (uint16_t)((lt->tm_year >= 80 ? lt->tm_year - 80 : 0) << 9 | (lt->tm_mon + 1) << 5 | lt->tm_mday);
+        }
+        for (auto& ch : d.name) ch = (char)std::toupper((unsigned char)ch);
+        out.push_back(d);
+    }
+    std::sort(out.begin(), out.end(), [](const DirEntry& a, const DirEntry& b) { return a.name < b.name; });
+    return true;
+}
+
+// "KEYBORD.P*" -> "KEYBORD P??"; false if the name has no 8.3 form
+static bool name83(const std::string& n, char out[11], bool pattern) {
+    std::memset(out, ' ', 11);
+    size_t dot = n.find('.');
+    std::string base = n.substr(0, dot), ext = dot == std::string::npos ? "" : n.substr(dot + 1);
+    if (base.size() > 8 || ext.size() > 3 || ext.find('.') != std::string::npos) return false;
+    auto fill = [&](const std::string& s, char* f, int len) {
+        for (int k = 0; k < len && k < (int)s.size(); ++k) {
+            if (pattern && s[k] == '*') { std::memset(f + k, '?', len - k); return; }
+            f[k] = (char)std::toupper((unsigned char)s[k]);
+        }
+    };
+    fill(base, out, 8);
+    fill(ext, out + 8, 3);
+    return true;
+}
+
+static void find_next(Machine& m, X86Cpu& c) {
+    uint8_t d[0x2B];
+    m.read_block(m.dta, d, sizeof d);
+    uint32_t next = d[0x0D] | d[0x0E] << 8, dir = d[0x0F] | d[0x10] << 8;
+    std::vector<DirEntry> es;
+    if (dir < m.search_dirs.size()) list_dir(m, m.search_dirs[dir], es);
+    for (uint32_t k = next; k < es.size(); ++k) {
+        const DirEntry& e = es[k];
+        char n[11];
+        if ((e.attr & 0x16) & ~d[0x0C] || !name83(e.name, n, false)) continue;
+        bool match = true;
+        for (int i = 0; i < 11 && match; ++i) match = d[1 + i] == '?' || d[1 + i] == (uint8_t)n[i];
+        if (!match) continue;
+        d[0x0D] = (uint8_t)(k + 1); d[0x0E] = (uint8_t)((k + 1) >> 8);
+        d[0x15] = e.attr;
+        d[0x16] = (uint8_t)e.time; d[0x17] = (uint8_t)(e.time >> 8);
+        d[0x18] = (uint8_t)e.date; d[0x19] = (uint8_t)(e.date >> 8);
+        for (int i = 0; i < 4; ++i) d[0x1A + i] = (uint8_t)(e.size >> (8 * i));
+        std::memset(d + 0x1E, 0, 13);
+        std::memcpy(d + 0x1E, e.name.data(), std::min<size_t>(12, e.name.size()));
+        m.write_block(m.dta, d, sizeof d);
+        if (m.trace_int) std::fprintf(stderr, "  found %s\n", e.name.c_str());
+        s16(c, 0, 0);
+        set_cf(c, false);
+        return;
+    }
+    d[0x0D] = (uint8_t)es.size(); d[0x0E] = (uint8_t)(es.size() >> 8);
+    m.write_block(m.dta, d, 0x0F);
+    s16(c, 0, 0x12);
+    set_cf(c, true);
+}
+
+static void find_first(Machine& m, X86Cpu& c, const std::string& pattern) {
+    size_t cut = pattern.find_last_of("\\/:");
+    std::string dirpart = cut == std::string::npos ? "" : pattern.substr(0, cut + 1);
+    std::string file = cut == std::string::npos ? pattern : pattern.substr(cut + 1);
+    if (dirpart.size() == 2 && dirpart[1] == ':') dirpart += "\\";
+    std::string path;
+    bool disc = on_disc(m, dirpart.empty() ? "x" : dirpart + "x", path);  // a name in that directory
+    path.pop_back();
+    char drive = dirpart.size() >= 2 && dirpart[1] == ':' ? (char)std::toupper((unsigned char)dirpart[0]) : m.drive;
+    std::string key = std::string(1, disc ? 'Q' : 'H') + "|" + path;
+    uint32_t id = 0;
+    while (id < m.search_dirs.size() && m.search_dirs[id] != key) ++id;
+    if (id == m.search_dirs.size()) m.search_dirs.push_back(key);
+    uint8_t d[0x11] = {};
+    d[0] = disc ? (uint8_t)(drive | 0x80) : (uint8_t)(drive - 'A' + 1);
+    if (!name83(file, (char*)d + 1, true)) { s16(c, 0, 2); set_cf(c, true); return; }
+    d[0x0C] = (uint8_t)c.r[1];
+    d[0x0F] = (uint8_t)id; d[0x10] = (uint8_t)(id >> 8);
+    m.write_block(m.dta, d, sizeof d);
+    std::vector<DirEntry> es;
+    if (!list_dir(m, key, es)) { s16(c, 0, 3); set_cf(c, true); return; }
+    find_next(m, c);
+}
+
 void Machine::int21(X86Cpu& c) {
     uint8_t ah = (c.r[0] >> 8) & 0xFF, al = c.r[0] & 0xFF;
     uint32_t ds = c.sbase[3];
@@ -63,6 +175,42 @@ void Machine::int21(X86Cpu& c) {
         return;
     }
     case 0x19: s8(c, 0, (uint32_t)(drive - 'A')); return;
+    case 0x1A:                                      // the DTA at DS:EDX (registers as they were)
+        dta_sel = c.sreg[3]; dta_off = c.r[2]; dta = ds + c.r[2];
+        return;
+    case 0x2F:                                      // the DTA: ES:EBX
+        x86_load_seg(c, 0, dta_sel);
+        c.r[3] = dta_off;
+        return;
+    case 0x4E:                                      // find the first name like DS:EDX, attributes CX
+        find_first(*this, c, cstr(*this, ds + c.r[2]));
+        if (trace_int && (c.fl & X86_CF)) std::fprintf(stderr, "  none (%x)\n", c.r[0] & 0xFFFF);
+        return;
+    case 0x4F:                                      // the next one, from the DTA
+        find_next(*this, c);
+        return;
+    case 0x36: {                                    // free space on drive DL (0 the current):
+        // AX sectors a cluster, BX free clusters, CX bytes a sector, DX clusters. A host drive
+        // as a 2HD floppy of the Towns, 1,232 sectors of 1,024 bytes, less what its directory
+        // holds (*inferred*: no floppy on the oracle); the CD none free (*inferred*)
+        char d = (c.r[2] & 0xFF) ? (char)('A' + (c.r[2] & 0xFF) - 1) : drive;
+        if (d == 'Q') {
+            uint32_t n = 0;
+            for (const auto& t : disc.tracks()) if (!t.audio) n += t.sectors;
+            s16(c, 0, 1); s16(c, 3, 0); s16(c, 1, 2048); s16(c, 2, n);
+            return;
+        }
+        std::string path;
+        on_disc(*this, std::string(1, d) + ":x", path);
+        path.pop_back();
+        uint32_t used = 0;
+        std::error_code ec;
+        if (std::filesystem::is_directory(path, ec))
+            for (const auto& e : std::filesystem::directory_iterator(path, ec))
+                if (!e.is_directory()) used += (uint32_t)((e.file_size(ec) + 1023) / 1024);
+        s16(c, 0, 1); s16(c, 3, used < 1232 ? 1232 - used : 0); s16(c, 1, 1024); s16(c, 2, 1232);
+        return;
+    }
     case 0x30:                                      // the version: DOS 3.10, and RUN386's "DX" above
         c.r[0] = 0x44580A03u;                       // (the oracle: EAX 44580A03h, EBX FF00h)
         c.r[3] = 0xFF00;
@@ -272,20 +420,32 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         uint8_t p[6];
         read_block(buf, p, 6);
         cd_play(from_msf(p), from_msf(p + 3));
+        cd_paused = false;
         cd.repeat = c.r[1] & 0xFF;
         if (trace_int) std::fprintf(stderr, "  CD-DA %u to %u (frame %llu)\n", cd.from, cd.to, (unsigned long long)frame);
         return;
     }
     case 0x53: {                                    // where the play is: AL and the buffer
-        // (*inferred*: AL 0 and positions 0 while nothing plays, as FORRBIOS.NSD answered on
-        // the oracle before any play; the buffer's bytes as the program reads them: [1], the
-        // track's [3..5], the disc's [7..9])
+        // As FORRBIOS.NSD answered on the oracle (tools/oracle.py --trace-calls at the int and
+        // after it): AL 1 while a track plays, 0 paused or stopped; the buffer [1] the track,
+        // [3..5] the position from the play's first sector, [7..9] the disc's position (the
+        // sector as MSF, binary, with no lead-in: as MAME's CD answers, "incorrect" by its own
+        // note) while it plays or is paused, all zero once a track has ended or none played.
         uint8_t p[10] = {};
+        uint32_t s = cd_sector();               // (a track that has ended stops here)
+        if (cd.playing || cd_paused) {
+            auto msf = [](uint32_t f, uint8_t* q) { q[0] = (uint8_t)(f / 4500); q[1] = (uint8_t)(f / 75 % 60); q[2] = (uint8_t)(f % 75); };
+            for (const auto& t : disc.tracks())
+                if (s >= t.lba()) p[1] = (uint8_t)t.number;
+            msf(s - cd.from, p + 3);
+            msf(s, p + 7);
+        }
         write_block(buf, p, sizeof p);
-        ret &= 0xFFFFFF00u;
+        ret = (ret & 0xFFFFFF00u) | (cd.playing ? 1 : 0);
         return;
     }
-    case 0x55:                                      // pause
+    case 0x55:                                      // pause: AH=22h when paused already
+        if (cd_paused) { ret = (ret & 0xFFFF00FFu) | 0x2200; return; }
         cd_paused = cd.playing;
         if (cd.playing) cd_stop();
         return;

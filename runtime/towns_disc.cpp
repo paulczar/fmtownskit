@@ -158,7 +158,10 @@ void Disc::walk(uint32_t lba, uint32_t size, const std::string& prefix, int dept
         std::memcpy(&elba, r + 2, 4);
         std::memcpy(&esz, r + 10, 4);
         bool dir = r[25] & 2;
-        files_.push_back({prefix + name, elba, esz, dir});
+        // the record's date and time (years since 1900), as DOS packs them
+        uint16_t time = (uint16_t)(r[21] << 11 | r[22] << 5 | r[23] / 2);
+        uint16_t date = (uint16_t)((r[18] >= 80 ? r[18] - 80 : 0) << 9 | r[19] << 5 | r[20]);
+        files_.push_back({prefix + name, elba, esz, dir, time, date});
         if (dir) walk(elba, esz, prefix + name + "\\", depth + 1);
     }
 }
@@ -168,7 +171,7 @@ static std::string upper(std::string s) {
     return s;
 }
 
-bool Disc::find(const std::string& path, DiscFile& out) {
+void Disc::index() {
     if (!walked_) {
         walked_ = true;
         uint8_t pvd[2048];
@@ -184,12 +187,39 @@ bool Disc::find(const std::string& path, DiscFile& out) {
             if (pvd[0] == 255) break;
         }
     }
+}
+
+static std::string disc_path(const std::string& path) {
     std::string want = upper(path);
     for (auto& ch : want) if (ch == '/') ch = '\\';
     while (!want.empty() && want[0] == '\\') want.erase(0, 1);
+    while (!want.empty() && want.back() == '\\') want.pop_back();
+    return want;
+}
+
+bool Disc::find(const std::string& path, DiscFile& out) {
+    index();
+    std::string want = disc_path(path);
     for (const auto& f : files_)
         if (upper(f.name) == want) { out = f; return true; }
     return false;
+}
+
+bool Disc::list(const std::string& dir, std::vector<DiscFile>& out) {
+    index();
+    out.clear();
+    std::string want = disc_path(dir), prefix = want.empty() ? "" : want + "\\";
+    bool found = want.empty();
+    for (const auto& f : files_) {
+        std::string n = upper(f.name);
+        if (n == want && f.dir) found = true;
+        if (n.size() > prefix.size() && n.compare(0, prefix.size(), prefix) == 0
+            && n.find('\\', prefix.size()) == std::string::npos) {
+            out.push_back(f);
+            out.back().name = f.name.substr(prefix.size());
+        }
+    }
+    return found;
 }
 
 bool Disc::file(const std::string& path, std::vector<uint8_t>& out) {

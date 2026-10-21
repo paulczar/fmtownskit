@@ -1,6 +1,7 @@
 // fmtownskit runtime -- a window for the machine, on SDL3 (see towns_sdl.h).
 #include "towns_sdl.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <vector>
 
 namespace towns {
@@ -17,6 +18,7 @@ struct SdlHost::Impl {
     std::vector<uint32_t> rgb;
     std::vector<int16_t> sound;
     uint64_t next_ns = 0;                   // the pace without sound: the next frame's time
+    float mx = 0, my = 0;                   // the host mouse's movement not yet given, in frame pixels
     ~Impl() {
         for (SDL_Gamepad* g : pads) SDL_CloseGamepad(g);
         if (audio) SDL_DestroyAudioStream(audio);
@@ -33,7 +35,7 @@ SdlHost::~SdlHost() = default;
 bool SdlHost::open(const SdlOptions& o, std::string& err) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) { err = SDL_GetError(); return false; }
     p_ = std::make_unique<Impl>();
-    int w = 704, h = 525, scale = o.scale;
+    int w = 640, h = 480, scale = o.scale;
     if (scale <= 0) {
         SDL_Rect r;
         scale = 1;
@@ -93,6 +95,20 @@ void SdlHost::vsync(Machine& m) {
             if (e.key.scancode == SDL_SCANCODE_F11 || (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(s.win, !(SDL_GetWindowFlags(s.win) & SDL_WINDOW_FULLSCREEN));
             break;
+        case SDL_EVENT_MOUSE_MOTION:
+            // the frame's pixels moved, as the mouse in the second port's counts
+            SDL_ConvertEventToRenderCoordinates(s.ren, &e);
+            s.mx += e.motion.xrel;
+            s.my += e.motion.yrel;
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: {
+            uint8_t bit = e.button.button == SDL_BUTTON_LEFT ? 0x10 : e.button.button == SDL_BUTTON_RIGHT ? 0x20 : 0;
+            if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) m.mouse.buttons &= (uint8_t)~bit;
+            else m.mouse.buttons |= bit;
+            break;
+        }
+        case SDL_EVENT_WINDOW_MOUSE_ENTER: SDL_HideCursor(); break;
+        case SDL_EVENT_WINDOW_MOUSE_LEAVE: SDL_ShowCursor(); break;
         case SDL_EVENT_GAMEPAD_ADDED:
             if (SDL_Gamepad* g = SDL_OpenGamepad(e.gdevice.which)) s.pads.push_back(g);
             break;
@@ -108,21 +124,30 @@ void SdlHost::vsync(Machine& m) {
     if (s.pads.size() > 0) p0 |= held_pad(s.pads[0]);
     if (s.pads.size() > 1) p1 = held_pad(s.pads[1]);
     m.set_pad(0, p0);
-    m.set_pad(1, p1);
+    if (!m.mouse.present) m.set_pad(1, p1);
+    int dx = (int)s.mx, dy = (int)s.my;
+    m.mouse.x = (int16_t)(m.mouse.x + dx);
+    m.mouse.y = (int16_t)(m.mouse.y + dy);
+    s.mx -= (float)dx; s.my -= (float)dy;
 
-    int w, h;
-    m.render(s.rgb, w, h);
+    // the picture only (the CRTC's layer windows, not MAME's whole frame with its borders),
+    // centred on a canvas of at least 640x480: every mode at the same scale
+    int fw, fh, x, y, w, h;
+    m.render(s.rgb, fw, fh);
+    m.display_area(x, y, w, h);
+    int cw = std::max(w, 640), ch = std::max(h, 480);
     if (w != s.tw || h != s.th) {
         if (s.tex) SDL_DestroyTexture(s.tex);
         s.tex = SDL_CreateTexture(s.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
         SDL_SetTextureScaleMode(s.tex, SDL_SCALEMODE_NEAREST);
-        SDL_SetRenderLogicalPresentation(s.ren, w, h, SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
         s.tw = w; s.th = h;
     }
-    SDL_UpdateTexture(s.tex, nullptr, s.rgb.data(), w * 4);
+    SDL_UpdateTexture(s.tex, nullptr, s.rgb.data() + (size_t)y * fw + x, fw * 4);
     SDL_SetRenderDrawColor(s.ren, 0, 0, 0, 255);
     SDL_RenderClear(s.ren);
-    SDL_RenderTexture(s.ren, s.tex, nullptr, nullptr);
+    SDL_FRect dst{(float)((cw - w) / 2), (float)((ch - h) / 2), (float)w, (float)h};
+    SDL_RenderTexture(s.ren, s.tex, nullptr, &dst);
     SDL_RenderPresent(s.ren);
 
     m.audio_take(s.sound);

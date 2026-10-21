@@ -51,7 +51,7 @@ struct Track {
     uint32_t lba() const { return file_start + (uint32_t)index1; }
 };
 
-struct DiscFile { std::string name; uint32_t lba, size; bool dir; };
+struct DiscFile { std::string name; uint32_t lba, size; bool dir; uint16_t time = 0, date = 0; };  // DOS's
 
 class Disc {
 public:
@@ -61,6 +61,9 @@ public:
     bool read_bytes(uint32_t lba, uint32_t off, uint32_t n, uint8_t* out);
     bool find(const std::string& path, DiscFile& f);              // "\\DIR\\NAME.EXT", any case
     bool file(const std::string& path, std::vector<uint8_t>& out);
+    // the entries of a directory ("" the root), named within it, in the disc's order; false if
+    // there is no such directory
+    bool list(const std::string& dir, std::vector<DiscFile>& out);
     // 16-bit stereo samples of the disc's audio sector (counted as lba() counts); false if none
     bool read_audio(uint32_t sector, uint8_t* out2352);
 private:
@@ -68,6 +71,7 @@ private:
     const Track* data_ = nullptr;
     std::vector<DiscFile> files_;
     bool walked_ = false;
+    void index();
     void walk(uint32_t lba, uint32_t size, const std::string& prefix, int depth);
     std::vector<std::pair<std::string, FILE*>> handles_;
     FILE* handle(const std::string& path);
@@ -181,6 +185,7 @@ public:
     void sound_irq();                   // IRQ13 from the FM's and the PCM's flags
     void cd_play(uint32_t from, uint32_t to);
     void cd_stop();
+    uint32_t cd_sector();               // the sector playing (or paused at), up to `now`
     // the mix since the last take: kAudioRate stereo frames, up to about `now`
     void audio_take(std::vector<int16_t>& out);
     uint8_t audio_mute = 0;             // sources left out of the mix: 1 the FM, 2 the PCM, 4 the CD
@@ -202,6 +207,9 @@ public:
     void draw_sprites();
     // the frame as MAME's screen_update draws it: width x height of 0xRRGGBB
     void render(std::vector<uint32_t>& rgb, int& width, int& height);
+    // where the picture is in that frame: the two layers' windows as the CRTC sets them, joined
+    // (the rest is the border MAME's snapshot keeps); the window shows only this
+    void display_area(int& x, int& y, int& w, int& h) const;
 
     // DOS, Phar Lap, the CD BIOS
     Disc disc;
@@ -213,6 +221,9 @@ public:
     struct Handle { bool used = false; bool host = false; FILE* f = nullptr;
                     std::vector<uint8_t> data; uint32_t pos = 0; };
     std::vector<Handle> handles = std::vector<Handle>(32);
+    uint32_t dta = 0, dta_off = 0;      // the disk transfer area (1Ah), linear, and as DS:EDX gave it
+    uint16_t dta_sel = 0;
+    std::vector<std::string> search_dirs;   // the directories 4Eh searched (the DTA keeps an index)
     bool exited = false;
     int exit_code = 0;
     void int21(X86Cpu& c);

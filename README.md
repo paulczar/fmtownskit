@@ -43,7 +43,7 @@ the disc's TBIOS runs the Towns path, and needs no ROM.
 | Port | Game | What it asked of fmtownskit |
 |---|---|---|
 | pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS; the machine under them (`runtime/towns*`): memory and selectors as RUN386 leaves them, far calls into TBIOS, the program's interrupt handlers, VSYNC, the CRTC, palettes, VRAM and the sprite controller, the RF5C68's channels, DOS, Phar Lap and the CD BIOS over the disc image -- the logo, the opening and the title drawn as MAME draws them, pixel for pixel; the sound (`runtime/towns_sound.cpp`: the RF5C68, the YM3438 on ymfm, the CD's audio, mixed as MAME's speakers at its stream rates and resampling) held against MAME's WAV by replaying the oracle's sound log; the window and the Towns pad on SDL3 (`runtime/towns_sdl.*`, optional) |
-| pc-4ddriving | 4D Driving (1993, Electronic Arts Victor: *Stunts*; FM Towns Marty rerelease, Marty only) | a compiled program ten times the first's (MetaWare High C, 1,273 functions): the P3 **symbol table** Phar Lap's linker keeps (`exp`), its symbols as discovery's seeds, its sites' names and the bound of a jump table read with none (`x86map`, `recomp.discover`) -- a table of handlers filled at run time had been read on into the next variables; the P3 header's "extra" fields, bytes; the **x87's escapes** decoded and run as a 386 with no coprocessor runs them (`i386`, `i386emu`, `recomp.emit`), for MetaWare's FPU probe; the ports it reads (`towns`); a machine profile as data (`runtime/towns.h`, `towns.PROFILES`), since it asks RUN386 for all memory and MAME's 2 MB Towns leaves it too little; jump tables **placed after their jump** in hand-written drawing code, read by discovery; the symbols as the C++'s names and `--exp ...@CS/END` seeds; the self-test's vectors in slices and processes; `lsl` and `arpl` for MetaWare's start; DOS 30h/44h, Phar Lap's vectors (2502h-2507h), FORRBIOS.NSD's keyboard (int 90h), KimG (int 8Eh) and the CD BIOS raised in protected mode (`runtime/towns_dos`); **the mouse in the second port**, as MAME's fmtowns has it (`runtime/towns_io`) -- its start, logo, title and credits drawn as MAME draws them, pixel for pixel |
+| pc-4ddriving | 4D Driving (1993, Electronic Arts Victor: *Stunts*; FM Towns Marty rerelease, Marty only) | a compiled program ten times the first's (MetaWare High C, 1,273 functions): the P3 **symbol table** Phar Lap's linker keeps (`exp`), its symbols as discovery's seeds, its sites' names and the bound of a jump table read with none (`x86map`, `recomp.discover`) -- a table of handlers filled at run time had been read on into the next variables; the P3 header's "extra" fields, bytes; the **x87's escapes** decoded and run as a 386 with no coprocessor runs them (`i386`, `i386emu`, `recomp.emit`), for MetaWare's FPU probe; the ports it reads (`towns`); a machine profile as data (`runtime/towns.h`, `towns.PROFILES`), since it asks RUN386 for all memory and MAME's 2 MB Towns leaves it too little; jump tables **placed after their jump** in hand-written drawing code, read by discovery; the symbols as the C++'s names and `--exp ...@CS/END` seeds; the self-test's vectors in slices and processes; `lsl` and `arpl` for MetaWare's start; DOS 30h/44h, Phar Lap's vectors (2502h-2507h), FORRBIOS.NSD's keyboard (int 90h), KimG (int 8Eh) and the CD BIOS raised in protected mode (`runtime/towns_dos`); **the mouse in the second port**, as MAME's fmtowns has it (`runtime/towns_io`) -- its start, logo, title and credits drawn as MAME draws them, pixel for pixel; DOS's **find first and next** (1Ah, 2Fh, 4Eh, 4Fh: the Towns' DTA, on the CD and on host drives) and **free space** (36h), the CD BIOS's 53h and 55h **while a track plays** (`runtime/towns_dos`, `towns_disc`), the host's mouse in the window (`runtime/towns_sdl`) -- its menus, a race driven as on MAME, its CD-DA and engine held against MAME's WAV, the user disk on the host |
 
 ## Using it
 
@@ -165,14 +165,19 @@ one disc so far (see *Checks*):
   are placed by it as the dumps show, not yet by a rule.
 * **Phar Lap's function names** (`towns.PHARLAP`) are the extender's
   documented ones and have not yet been checked against RUN386's dispatch.
-* **The sound, the window and the pad** were held against the oracle on the
-  first game only; the second game's sound is not yet. The ports are what
-  two games and their TBIOS touch; anything else is logged once.
+* **The sound** was held against the oracle on both games (the second plays
+  no FM: the YM3438's FM voices were held only by `fmtest.lua`'s notes on
+  the first). The ports are what two games and their TBIOS touch; anything
+  else is logged once.
 * **FORRBIOS.NSD's services are answered as one game saw them**: the
   keyboard with no key ever pressed (the matrix *inferred* empty), the CD
-  BIOS's 53h *inferred* while nothing plays; its 91h, 96h, 97h not at all.
-  The mouse in the second port never moves (the host's mouse not wired).
-* **The CMOS RAM** reads 0 (MAME's comes from its NVRAM).
+  BIOS's 53h-56h as one game's calls met them; its 91h, 96h, 97h not at
+  all.
+* **A host drive is a 2HD floppy** to DOS's 36h (*inferred*: 1,232 sectors
+  of 1,024 bytes); the Towns' DOS's DTA for a find on a host drive is the
+  one read for the CD, with the host's attributes.
+* **The CMOS RAM** reads 0 (MAME's comes from its NVRAM; the two addresses
+  the second game reads hold 0 there too).
 * **Loads take no time**: a file is read from the image at once, where the
   Towns reads its CD at the drive's pace -- the same pictures come sooner
   than on the oracle, and what hangs on timing (a computer's play) drifts.

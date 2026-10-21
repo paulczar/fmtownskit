@@ -265,6 +265,23 @@ void Machine::render(std::vector<uint32_t>& rgb, int& width, int& height) {
     }
 }
 
+void Machine::display_area(int& x, int& y, int& w, int& h) const {
+    const Video& v = video;
+    int width = v.crtc[4] - v.crtc[0] + 1, height = v.crtc[8] / 2 + 1;
+    if (width <= 1 || height <= 1 || width > 1024 || height > 1024) { width = 640; height = 480; }
+    // the two layers' windows (as render() places them), clipped to the frame, joined
+    int x0 = width, y0 = height, x1 = -1, y1 = -1;
+    for (int n = 0; n < 2; ++n) {
+        // (the end register is the first pixel past the window: render() leaves that column empty)
+        int lx0 = std::max(v.crtc[9 + 2 * n] - v.crtc[0], 0), lx1 = std::min(v.crtc[10 + 2 * n] - v.crtc[0] - 1, width - 1);
+        int ly0 = std::max((v.crtc[13 + 2 * n] - v.crtc[6]) / 2, 0), ly1 = std::min((v.crtc[14 + 2 * n] - v.crtc[6]) / 2 - 1, height - 1);
+        if (lx1 < lx0 || ly1 < ly0) continue;
+        x0 = std::min(x0, lx0); y0 = std::min(y0, ly0); x1 = std::max(x1, lx1); y1 = std::max(y1, ly1);
+    }
+    if (x1 < x0) { x = 0; y = 0; w = width; h = height; return; }
+    x = x0; y = y0; w = x1 - x0 + 1; h = y1 - y0 + 1;
+}
+
 // ---- PNG: stored deflate blocks --------------------------------------------------------------
 static void be32(std::vector<uint8_t>& o, uint32_t v) {
     o.push_back((uint8_t)(v >> 24)); o.push_back((uint8_t)(v >> 16)); o.push_back((uint8_t)(v >> 8)); o.push_back((uint8_t)v);

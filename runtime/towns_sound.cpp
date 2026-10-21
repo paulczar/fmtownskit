@@ -171,6 +171,11 @@ void Machine::cd_stop() {
     cd.playing = false;
 }
 
+uint32_t Machine::cd_sector() {
+    cd_catch_up(*this, *chips, now);
+    return chips->sector_pos < 588 && cd.lba > cd.from ? cd.lba - 1 : cd.lba;
+}
+
 // ---- time ------------------------------------------------------------------------------------
 uint64_t Machine::sound_next_event() const {
     const SoundChips& s = *chips;
