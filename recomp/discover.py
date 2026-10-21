@@ -49,11 +49,40 @@ class Program:
                     seeds.append(v)
         self.entries = list(dict.fromkeys(seeds))
         self.cut = {}                  # table site -> entries kept (a read table cut short)
+        self.pushed = {}               # jmp site -> the return address a `push` before it gave
         for _ in range(64):
             self._reset()
             self._descend([(e, None) for e in self.entries])
-            if not self._prune():
+            if not self._prune() and not self._pushcalls():
                 break
+
+    def _pushcalls(self):
+        """Calls made by hand, `push RET; jmp F` (ABEL's TBIOS, the graphic module: `push 0x41B4;
+        jmp 0x5FA4`, F's `ret` coming back to 0x41B4): F is a function, RET the code that goes on.
+        RET must be code already -- an instruction discovery has, or the start of code right after
+        a ret, retf or jmp (nops between) -- and not below 0x100: a compiler's `push N; jmp` to
+        where its call happens pushes an argument (in a program at base 0, a number like any
+        address). True if new ones were found."""
+        new = False
+        for a, i in list(self.insn.items()):
+            if i.op != 'push' or not i.ops or i.ops[0][0] != 'i' or i.osize != 4:
+                continue
+            j = self.insn.get(a + i.size)
+            if j is None or j.op != 'jmp' or j.ops[0][0] != 'j' or (a + i.size) in self.pushed:
+                continue
+            v = i.ops[0][1] & 0xFFFFFFFF
+            if v < 0x100 or not 0 <= v - self.base < len(self.img):
+                continue
+            k = v
+            while k > self.base and self.img[k - 1 - self.base] == 0x90:
+                k -= 1
+            # (not the pair's own jmp: `push 4; push 0x7708; jmp 0x7604` passes a table placed after it)
+            after_end = any(b in self.insn and b + self.insn[b].size == k and b != a + i.size and
+                            self.insn[b].op in ('ret', 'retf', 'jmp', 'iretd') for b in range(k - 5, k))
+            if v in self.insn or after_end:
+                self.pushed[a + i.size] = v
+                new = True
+        return new
 
     def _reset(self):
         self.insn, self.origin = {}, {}
@@ -121,6 +150,13 @@ class Program:
                             work.append((x, (pc, k) if read else org))
                 elif op in ('call', 'jmp') and o0[0] == 'r':
                     self.indirect.append(pc)
+                elif op == 'jmp' and pc in self.pushed:
+                    # a call made by hand: the jump's target a function, the pushed address goes on
+                    if o0[1] not in self.functions:
+                        self.functions.add(o0[1])
+                        work.append((o0[1], org))
+                    self.targets.add(self.pushed[pc])
+                    work.append((self.pushed[pc], org))
                 elif op == 'call':
                     if o0[1] not in self.functions:
                         self.functions.add(o0[1])
@@ -213,6 +249,10 @@ class Program:
                     # a signed `jg` bounds the entries from 0 up as `ja` does (ABEL.EXE's 0xCB2D:
                     # `jle` past index 0 and below, `cmp esi, 0x14; jg`: 21 entries)
                     n = c.ops[1][1]
+                    if q.op in ('ja', 'jg') and j > 0 and run[j - 1].op == 'je':
+                        # N itself goes elsewhere on the same flags (ABEL's TBIOS, the sprite
+                        # module's 0x15B20: `cmp al, 2; ja; je`, a table of 2 entries)
+                        return n
                     return n + 1 if q.op in ('ja', 'jg') else n
             if not writes:
                 continue
@@ -237,6 +277,9 @@ class Program:
                 o0 = i.ops[0] if i.ops else None
                 if pc in self.tables and i.op == 'jmp':
                     work += [x for x in self.tables[pc][1] if x]
+                    break
+                if pc in self.pushed:               # a call made by hand: on at the pushed address
+                    work.append(self.pushed[pc])
                     break
                 if o0 is not None and o0[0] == 'j' and i.op != 'call':
                     work.append(o0[1])

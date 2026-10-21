@@ -215,6 +215,9 @@ extern const int g_x86_nmodules;
 const X86Module* x86_module(const char* name);
 X86Func x86_lookup(const X86Module* m, uint32_t addr);
 X86Func x86_lookup_cs(uint16_t cs, uint32_t addr);       // the function at cs:addr, or null
+// Several programs under one code selector, run one after another (ABEL's OPNG, ABEL, ENDG under
+// 0x0C, as RUN386 runs them): the ones not running are parked, and lookups by selector pass them.
+void x86_park(const X86Module* m, bool parked);
 uint32_t x86_crc32(const uint8_t* p, size_t n, uint32_t crc = 0);
 // The self-test's fill of a page of memory never written: the same as i386emu's (selftest.fill).
 void x86_fill_page(uint32_t page, uint8_t* out);

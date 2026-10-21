@@ -122,13 +122,34 @@ def compose(ini_path):
     return bytes(img), layout
 
 
+def seeds(img, layout):
+    """The code the records point at, for the recompiler: each export's entry, and the old
+    pointer an export or an import keeps in its record when it is TBIOS's own code (selector
+    0x110) -- a module chains to the entry it replaced through its record, not the table (ABEL's
+    mouse module calls the int 04dh module's System entry, 0x149CC, so)."""
+    out = set()
+    for key, val, base, size, name, recs in layout[1:]:
+        for k, (kind, slot, off) in enumerate(recs):
+            if off is not None:
+                out.add(off)
+            old, sel = struct.unpack_from('<IH', img, base + 0x30 + 8 * k)
+            if sel == CODE_SEL and old:
+                out.add(old)
+    return sorted(out)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('ini', help="the disc's TBIOS.INI (the modules beside it)")
     ap.add_argument('--out', metavar='FILE', help='write the composed image')
     ap.add_argument('--check', metavar='IMAGE', help='hold it against a TBIOS read from memory')
+    ap.add_argument('--seeds', action='store_true',
+                    help="only the code the records point at, as recomp's +SEED,... list")
     a = ap.parse_args(argv)
     img, layout = compose(a.ini)
+    if a.seeds:
+        print(','.join('%x' % s for s in seeds(img, layout)))
+        return
     for key, val, base, size, name, recs in layout:
         print('%-3s %-22s %#07x-%#07x %-9s %s' % (key, val, base, base + size, name,
               ', '.join('%s %#x%s' % (k, s, '' if o is None else '=%#x' % o) for k, s, o in recs)))

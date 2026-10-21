@@ -94,6 +94,7 @@ struct Video {
     uint8_t vreg[2] = {}, vsel = 0;     // the video output registers (0x448/0x44A)
     uint8_t pal_sel = 0;                // 0xFD90
     uint8_t pal16[2][16][3] = {}, pal256[256][3] = {};   // r g b
+    uint8_t pal_reg[256][3] = {};       // the colour registers 0xFD92-0xFD96 write (r g b), by entry
     uint8_t layer_ctrl = 0x0F;          // 0xFDA0
     uint8_t display_plane = 0, display_page = 0, vram_page = 0;  // 0xFF82, 0xFF83
     uint8_t wplane = 0, rplane = 0;     // 0xFF81
@@ -215,7 +216,9 @@ public:
     Disc disc;
     std::string save_dir = "save";
     char drive = 'Q';
-    uint32_t next_block = 0;            // the next int 21h AH=48h block's linear address
+    std::string cd_dir;                 // the CD's current directory, "" its root (ABEL's START: "ABEL\OP")
+    uint32_t tbios_size = 0;            // TBIOS's image at 0x100000 (selectors 0x110, 0x118)
+    uint32_t next_block = 0;          // the next int 21h AH=48h block's linear address
     uint16_t next_ldt = 0x44;
     uint32_t rm_buffer = 0x408C0;       // Phar Lap's real-mode call buffer (linear; 250Dh)
     struct Handle { bool used = false; bool host = false; FILE* f = nullptr;
@@ -234,6 +237,14 @@ public:
     void int90(X86Cpu& c);              // the keyboard BIOS (KYB_*), as FORRBIOS.NSD answers it
     void int8e(X86Cpu& c);              // KimG (the kanji input manager), as FORRBIOS.NSD answers it
     void intfd(X86Cpu& c);
+    // the timer BIOS, int 97h (the ROM's, which FORRBIOS.NSD hands protected-mode calls to; read
+    // on the oracle with ABEL's OPNG, towns_dos.cpp): timers counting 10 ms ticks, each with a
+    // limit and a far callback, called at the first safe point with IF set once the limit is met
+    struct Timer97 { bool on = false, due = false; uint8_t mode = 0; uint16_t sel = 0; uint32_t off = 0, limit = 0, count = 0; };
+    Timer97 t97[8];
+    uint64_t next_t97 = 0;              // the next 10 ms tick, while a timer is on
+    void int97(X86Cpu& c);
+    int t97_due();                      // a timer whose callback is due (cleared), or -1
 
     // the host's turn at each VSYNC (headless runs save frames here, and may stop the run by
     // throwing Stop)
@@ -253,8 +264,13 @@ struct Stop { int code; };          // thrown to end a run: the program's exit, 
 // instruction: every general register 0, EFLAGS 0x202, DS ES FS GS SS the data selector).
 struct P3 { uint32_t image_offset, image_size, base_offset, eip, esp, min_extra, max_extra;
             std::vector<uint8_t> image; };
-bool parse_p3(const std::vector<uint8_t>& file, P3& p, std::string& err);
-void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>& tbios);
+bool parse_p3(const std::vector<uint8_t>& file, P3& p, std::string& err);   // bound behind an MZ stub too
+// TBIOS composed from its modules as TBIOSLD.SYS does, from the disc's TBIOS.INI (e.g. "TBIOS/TBIOS.INI")
+bool compose_tbios(Disc& disc, const std::string& ini, std::vector<uint8_t>& image, std::string& err);
+void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>& tbios);   // the two below
+void boot_towns(Machine& m, const std::vector<uint8_t>& tbios);    // low RAM, TBIOS at 0x100000
+void run386_load(Machine& m, X86Cpu& c, const P3& p);             // a program, as RUN386 starts it
+void run386_end(Machine& m);                                      // what its end undoes, for the next
 
 // PNG, 8-bit RGB, no compression
 bool write_png(const std::string& path, const std::vector<uint32_t>& rgb, int w, int h);

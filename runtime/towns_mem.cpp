@@ -66,6 +66,10 @@ void Machine::townsos() {
     for (int i = 0; i < 256; ++i) {                 // bit 0 red, 1 green, 2 blue
         video.pal256[i][0] = i & 1 ? 0xFF : 0; video.pal256[i][1] = i & 2 ? 0xFF : 0; video.pal256[i][2] = i & 4 ? 0xFF : 0;
     }
+    // the colour registers as the boot left them (*inferred*: MAME's are not in its save state;
+    // the last palettes written, the 16-colour ones for entries 0-15)
+    std::memcpy(video.pal_reg, video.pal256, sizeof video.pal_reg);
+    std::memcpy(video.pal_reg, pal, sizeof pal);
 }
 
 Machine::~Machine() {

@@ -92,6 +92,7 @@ uint64_t Machine::next_event() const {
     if (vblank) t = std::min(t, vblank_end);
     if (sprite.busy) t = std::min(t, sprite.done_at);
     t = std::min(t, sound_next_event());
+    if (next_t97) t = std::min(t, next_t97);
     return t;
 }
 
@@ -108,6 +109,15 @@ void Machine::advance(uint64_t to) {
             raise_irq(11, false);
         }
         sound_run(now);                         // the RF5C68's samples, the YM3438's timers
+        if (next_t97 && now >= next_t97) {      // the timer BIOS's 10 ms tick
+            bool any = false;
+            for (Timer97& t : t97) {
+                if (!t.on) continue;
+                any = true;
+                if (++t.count >= t.limit && t.limit) t.due = true;
+            }
+            next_t97 = any ? next_t97 + kClock / 100 : 0;
+        }
         if (now >= next_vsync) {
             ++frame;
             vblank = true;
@@ -147,6 +157,24 @@ uint32_t Machine::in(uint32_t port, int n) {
 void Machine::out(uint32_t port, int n, uint32_t v) {
     if (trace_io) std::fprintf(stderr, "  out %04x.%d = %x\n", port, n, v);
     for (int k = 0; k < n; ++k) out8(port + k, (uint8_t)(v >> (8 * k)));
+}
+
+// Whether MAME's fmtowns has a reader at this byte of its io space (fmtowns.cpp, towns_io:
+// the ranges, and those under umask32(0x00ff00ff) only at their even bytes). Everything else
+// reads 0xFF there (map.unmap_value_high()): an absent card's ports -- ABEL's MIDI driver
+// probes 0xE59-0xE71 and 0x4A0-0x4AD, and takes 0 for a card that is there.
+static bool mame_reads(uint32_t port) {
+    static const struct { uint16_t lo, hi; bool even; } map[] = {
+        {0x0000, 0x0003, true}, {0x0010, 0x0013, true}, {0x0020, 0x0033, false}, {0x0040, 0x0047, true},
+        {0x0050, 0x0057, true}, {0x0060, 0x0060, false}, {0x0068, 0x006C, false}, {0x0070, 0x0070, false},
+        {0x00A0, 0x00BF, false}, {0x0200, 0x020F, false}, {0x0400, 0x0400, false}, {0x0404, 0x0404, false},
+        {0x0440, 0x045F, false}, {0x0480, 0x0480, false}, {0x048A, 0x048A, false}, {0x0490, 0x0491, false},
+        {0x04C0, 0x04CF, true}, {0x04D0, 0x04D3, false}, {0x04D8, 0x04DF, true}, {0x04E0, 0x04EF, false},
+        {0x05C8, 0x05CB, false}, {0x05E8, 0x05EF, true}, {0x0600, 0x0607, true}, {0x0A00, 0x0A0B, true},
+        {0x0C30, 0x0C37, true}, {0x3000, 0x4FFF, true}, {0xFD90, 0xFDA3, false}, {0xFF80, 0xFFFF, false}};
+    for (const auto& r : map)
+        if (port >= r.lo && port <= r.hi) return !r.even || !(port & 1);
+    return false;
 }
 
 uint8_t Machine::in8(uint32_t port) {
@@ -214,6 +242,7 @@ uint8_t Machine::in8(uint32_t port) {
     case 0x5E8: return (uint8_t)profile->ram_mb;    // MB of RAM
     case 0x5EC: return 0;
     case 0xFD90: return v.pal_sel;
+    case 0xFD91: case 0xFD93: case 0xFD95: case 0xFD97: return 0;   // MAME's reader: 0 (a dword read of an entry)
     case 0xFD92: case 0xFD94: case 0xFD96: {
         const uint8_t* rgb = (v.vreg[1] & 0x10) ? v.pal256[v.pal_sel] : v.pal16[(v.vreg[1] & 0x20) >> 5][v.pal_sel & 15];
         return port == 0xFD92 ? rgb[2] : port == 0xFD94 ? rgb[0] : rgb[1];
@@ -233,6 +262,8 @@ uint8_t Machine::in8(uint32_t port) {
     }
     default:
         if (port >= 0xFD98 && port <= 0xFD9F) return v.degipal[port - 0xFD98];
+        if (!mame_reads(port)) return 0xFF;     // nothing there, on MAME's machine (read there:
+                                                // 0x470, 0x5ED, 0x3001, the MIDI ports; docs of ABEL's s2)
         if (port >= 0x3000 && port < 0x5000) { unknown("CMOS read %04x", port); return 0; }
         unknown("in %04x", port);
         return 0;
@@ -296,11 +327,14 @@ void Machine::out8(uint32_t port, uint8_t d) {
     case 0x441: case 0xFD93: case 0xFD95: case 0x4D5: return;
     case 0xFD90: v.pal_sel = d; return;
     case 0xFD92: case 0xFD94: case 0xFD96: {
+        // MAME keeps one r, g, b register per entry (towns_palette_r/g/b), whichever palette is
+        // chosen: a component written sets the chosen palette's whole colour from all three
+        // (towns_update_palette). ABEL's throne room writes its floor's red with the 16-colour
+        // palette chosen, after the other components went in with the 256-colour one.
         int k = port == 0xFD92 ? 2 : port == 0xFD94 ? 0 : 1;   // b r g
-        switch (v.vreg[1] & 0x30) {
-        case 0x00: case 0x20: v.pal16[(v.vreg[1] & 0x20) >> 5][v.pal_sel & 15][k] = d; break;
-        default: v.pal256[v.pal_sel][k] = d; break;
-        }
+        v.pal_reg[v.pal_sel][k] = d;
+        uint8_t* rgb = (v.vreg[1] & 0x10) ? v.pal256[v.pal_sel] : v.pal16[(v.vreg[1] & 0x20) >> 5][v.pal_sel & 15];
+        std::memcpy(rgb, v.pal_reg[v.pal_sel], 3);
         return;
     }
     case 0xFDA0: v.layer_ctrl = d; return;

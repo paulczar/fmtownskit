@@ -162,7 +162,9 @@ class Emitter:
         for a in body:
             i = p.insn[a]
             o0 = i.ops[0] if i.ops else None
-            if o0 is not None and o0[0] == 'j' and i.op != 'call':
+            if a in p.pushed:
+                labels.add(p.pushed[a])
+            elif o0 is not None and o0[0] == 'j' and i.op != 'call':
                 labels.add(o0[1])
             if a in p.tables and i.op == 'jmp':
                 labels.update(x for x in p.tables[a][1] if x in inbody)
@@ -424,7 +426,12 @@ class Emitter:
         # --- transfers ------------------------------------------------------------
         if op == 'jmp':
             o = ops[0]
-            if o[0] == 'j':
+            if a in self.p.pushed:
+                # a call made by hand (`push RET; jmp F`, the push already done): F's C++ called,
+                # its return checked to be RET, then on there
+                r = self.p.pushed[a]
+                L.append('f_%08x(c); X86_RET(c, 0x%xu); %s' % (o[1], r, self.go(a, r)))
+            elif o[0] == 'j':
                 L.append(self.go(a, o[1]))
             elif a in self.p.tables:
                 L.append('{ uint32_t t = %s;' % self.rd(i, o))

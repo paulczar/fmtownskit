@@ -39,7 +39,10 @@ static bool on_disc(Machine& m, const std::string& name, std::string& path) {
     char drive = m.drive;
     path = name;
     if (name.size() >= 2 && name[1] == ':') { drive = (char)std::toupper((unsigned char)name[0]); path = name.substr(2); }
-    if (drive == 'Q') return true;
+    if (drive == 'Q') {                 // a relative name from the CD's current directory
+        if (!m.cd_dir.empty() && (path.empty() || (path[0] != '\\' && path[0] != '/'))) path = m.cd_dir + "\\" + path;
+        return true;
+    }
     while (!path.empty() && (path[0] == '\\' || path[0] == '/')) path.erase(0, 1);
     for (auto& ch : path) {
         ch = (char)std::tolower((unsigned char)ch);
@@ -211,6 +214,23 @@ void Machine::int21(X86Cpu& c) {
         s16(c, 0, 1); s16(c, 3, used < 1232 ? 1232 - used : 0); s16(c, 1, 1024); s16(c, 2, 1232);
         return;
     }
+    case 0x2A: case 0x2C: {                         // the date (AL weekday, CX year, DH month, DL day),
+        // the time (CH hour, CL minutes, DH seconds, DL hundredths): the host's, as MAME's RTC
+        auto now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        std::tm lt{};
+        if (const std::tm* p = std::localtime(&t)) lt = *p;
+        if (ah == 0x2A) {
+            s8(c, 0, (uint32_t)lt.tm_wday);
+            s16(c, 1, (uint32_t)(lt.tm_year + 1900));
+            s16(c, 2, (uint32_t)((lt.tm_mon + 1) << 8 | lt.tm_mday));
+        } else {
+            auto cs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() / 10 % 100;
+            s16(c, 1, (uint32_t)(lt.tm_hour << 8 | lt.tm_min));
+            s16(c, 2, (uint32_t)(lt.tm_sec << 8 | (int)cs));
+        }
+        return;
+    }
     case 0x30:                                      // the version: DOS 3.10, and RUN386's "DX" above
         c.r[0] = 0x44580A03u;                       // (the oracle: EAX 44580A03h, EBX FF00h)
         c.r[3] = 0xFF00;
@@ -316,6 +336,18 @@ void Machine::int21(X86Cpu& c) {
     }
     case 0x3F: case 0x40: {                         // read, write: ECX bytes at DS:EDX
         uint32_t h = c.r[3] & 0xFFFF;
+        if (ah == 0x40 && (h == 1 || h == 2)) {     // the console (ABEL writes to it as it starts):
+            std::string s;                          // shown here, every byte taken
+            for (uint32_t k = 0; k < c.r[1]; ++k) {
+                uint8_t ch = (uint8_t)mem_read(ds + c.r[2] + k, 1);
+                if (ch >= 0x20 || ch == '\n') s += (char)ch;
+                else { char e[8]; std::snprintf(e, sizeof e, "<%02x>", ch); s += e; }
+            }
+            std::fprintf(stderr, "dos: %s\n", s.c_str());
+            c.r[0] = c.r[1];
+            set_cf(c, false);
+            return;
+        }
         if (h >= handles.size() || !handles[h].used) { set_cf(c, true); s16(c, 0, 6); return; }
         Handle& hd = handles[h];
         uint32_t n = c.r[1], buf = ds + c.r[2];
@@ -359,7 +391,13 @@ void Machine::int21(X86Cpu& c) {
     }
     case 0x44: {                                    // IOCTL 00h, a handle's device information:
         uint32_t h = c.r[3] & 0xFFFF;               // a file (bit 7 clear), not written (bit 6), on
-        if (al != 0x00 || h >= handles.size() || !handles[h].used) break;   // the CD's drive: 50h
+        if (al == 0x00 && h <= 2) {                 // the CD's drive: 50h. The standard handles: the
+            s16(c, 2, 0x80D3);                      // console, 80D3h (ABEL's stdout, on the oracle)
+            s16(c, 0, 0x80D3);
+            set_cf(c, false);
+            return;
+        }
+        if (al != 0x00 || h >= handles.size() || !handles[h].used) break;
         uint32_t info = 0x40 | (uint32_t)((handles[h].host ? 'A' : drive) - 'A');
         s16(c, 2, info);
         s16(c, 0, info);
@@ -525,7 +563,19 @@ void Machine::intfd(X86Cpu& c) {
 }
 
 // ---- RUN386 ------------------------------------------------------------------------------------
-bool parse_p3(const std::vector<uint8_t>& f, P3& p, std::string& err) {
+bool parse_p3(const std::vector<uint8_t>& file, P3& p, std::string& err) {
+    // a P3 bound behind an MZ stub (Fujitsu's "exp2exe", ABEL's programs): it starts where the
+    // MZ header's page count ends, and every offset counts from there (fmtownskit.exp)
+    size_t stub = 0;
+    if (file.size() >= 0x1C && file[0] == 'M' && file[1] == 'Z') {
+        size_t last = file[2] | file[3] << 8, pages = file[4] | file[5] << 8;
+        stub = pages * 512 - (last ? 512 - last : 0);
+        if (stub + 2 > file.size() || file[stub] != 'P' || file[stub + 1] != '3') {
+            err = "an MZ file with no P3 where its header ends";
+            return false;
+        }
+    }
+    const std::vector<uint8_t> f(file.begin() + (long)stub, file.end());
     auto u32 = [&](size_t o) { uint32_t v; std::memcpy(&v, &f[o], 4); return v; };
     auto u16 = [&](size_t o) { uint16_t v; std::memcpy(&v, &f[o], 2); return v; };
     if (f.size() < 0x80 || f[0] != 'P' || f[1] != '3') { err = "not a P3 .EXP"; return false; }
@@ -538,10 +588,165 @@ bool parse_p3(const std::vector<uint8_t>& f, P3& p, std::string& err) {
     return true;
 }
 
+// ---- the timer BIOS, int 97h ---------------------------------------------------------------
+// Read on the oracle (ABEL's OPNG, tools/oracle.py --trace-calls at its int 97h and after):
+// AH=00h starts a timer from the packet at DS:EDI -- [0] the mode (bit 0: once; OPNG's are 2,
+// repeating), [2] the callback's offset and [6] its selector, [8] and [10] the limit as two
+// words, the high one first -- and answers its number in AL; AH=01h stops timer AL; AH=02h
+// writes timer AL's count of 10 ms ticks to [8] and [10] of the buffer at DS:EDI, the same way.
+// AH=0 for success. OPNG waits by polling 02h (its count reaches 5 every 50 ms on the oracle)
+// and sets limits of 400 and 2000 ticks for its callbacks: the one at 400 ran 4.00 s later.
+void Machine::int97(X86Cpu& c) {
+    uint8_t ah = (c.r[0] >> 8) & 0xFF, al = c.r[0] & 0xFF;
+    uint32_t p = c.sbase[3] + c.r[7];
+    auto setah = [&](uint8_t v) { c.r[0] = (c.r[0] & ~0xFF00u) | (uint32_t)v << 8; };
+    if (trace_int) std::fprintf(stderr, "int 97h AX=%04X EDI=%08X\n", c.r[0] & 0xFFFF, c.r[7]);
+    switch (ah) {
+    case 0x00: {
+        int n = 0;
+        while (n < 8 && t97[n].on) ++n;
+        if (n == 8) { unknown("int 97h: no timer free"); setah(1); return; }
+        Timer97& t = t97[n];
+        t = Timer97{};
+        t.on = true;
+        t.mode = (uint8_t)mem_read(p, 1);
+        t.off = mem_read(p + 2, 4);
+        t.sel = (uint16_t)mem_read(p + 6, 2);
+        t.limit = mem_read(p + 8, 2) << 16 | mem_read(p + 10, 2);
+        if (!next_t97) next_t97 = now + kClock / 100;
+        c.r[0] = (c.r[0] & ~0xFFFFu) | (uint32_t)n;
+        return;
+    }
+    case 0x01:
+        if (al < 8) t97[al].on = false;
+        setah(0);
+        return;
+    case 0x02:
+        if (al < 8) {
+            mem_write(p + 8, 2, t97[al].count >> 16);
+            mem_write(p + 10, 2, t97[al].count & 0xFFFF);
+        }
+        setah(0);
+        return;
+    default: {
+        char why[64];
+        std::snprintf(why, sizeof why, "int 97h AX=%04Xh: no service", c.r[0] & 0xFFFF);
+        x86_fault(c, c.eip, why);
+    }
+    }
+}
+
+int Machine::t97_due() {
+    for (int n = 0; n < 8; ++n) {
+        Timer97& t = t97[n];
+        if (!t.on || !t.due) continue;
+        t.due = false;
+        if (t.mode & 1) t.on = false;
+        else t.count = 0;
+        return n;
+    }
+    return -1;
+}
+
+// A TBIOS in modules (ABEL's disc: CONFIG.SYS loads TBIOSLD.SYS, which reads TBIOS.INI), laid
+// out as TBIOSLD does (fmtownskit.tbiosld, where the rules are written down and checked against
+// the oracle's memory): the first file at 0 as it is, each Phar Lap "MQ" image after it at the
+// next 16-byte boundary, relocated there; each module's records linked into the entry table
+// (an export sets the slot to its entry and keeps the old pointer, an import takes the slot's
+// pointer); the modules' data pointers at 0x200.
+bool compose_tbios(Disc& disc, const std::string& ini, std::vector<uint8_t>& img, std::string& err) {
+    std::vector<uint8_t> text;
+    if (!disc.file(ini, text)) { err = ini + " not on the disc"; return false; }
+    std::vector<std::pair<std::string, std::string>> mods;   // key, file
+    std::string line;
+    text.push_back('\n');
+    for (uint8_t ch : text) {
+        if (ch != '\n' && ch != '\r') { line += (char)ch; continue; }
+        size_t eq = line.find('=');
+        if (eq != std::string::npos && eq > 0 &&
+            std::all_of(line.begin(), line.begin() + (long)eq, [](char k) { return std::isalpha((uint8_t)k); }))
+            mods.push_back({line.substr(0, eq), line.substr(eq + 1)});
+        line.clear();
+    }
+    if (mods.empty() || mods[0].first != "BIN") { err = ini + " does not start with BIN="; return false; }
+    if (!disc.file(mods[0].second, img)) { err = mods[0].second + " not on the disc"; return false; }
+    auto u16 = [](const uint8_t* p) { return (uint32_t)(p[0] | p[1] << 8); };
+    auto u32 = [](const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; };
+    auto put32 = [](uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); };
+    std::vector<std::pair<uint32_t, uint16_t>> datas;
+    for (size_t k = 1; k < mods.size(); ++k) {
+        const std::string& name = mods[k].second;
+        std::vector<uint8_t> f;
+        if (!disc.file(name, f)) { err = name + " not on the disc"; return false; }
+        if (f.size() < 0x1C || f[0] != 'M' || f[1] != 'Q') { err = name + ": not an MQ image"; return false; }
+        uint32_t last = u16(&f[2]), pages = u16(&f[4]), nrel = u16(&f[6]), hpar = u16(&f[8]), roff = u16(&f[0x18]);
+        if (pages * 512 - (last ? 512 - last : 0) != f.size() || roff + 4 * nrel > f.size() || hpar * 16 > f.size()) {
+            err = name + ": its MQ header does not match the file";
+            return false;
+        }
+        uint32_t base = ((uint32_t)img.size() + 15) & ~15u;
+        std::vector<uint8_t> m(f.begin() + hpar * 16, f.end());
+        for (uint32_t r = 0; r < nrel; ++r) {
+            uint32_t rel = u32(&f[roff + 4 * r]), o = rel & 0x7FFFFFFF;
+            if (o + 4 > m.size()) { err = name + ": a relocation past the image"; return false; }
+            if (rel >> 31) put32(&m[o], u32(&m[o]) + base);
+            else { uint32_t v = u16(&m[o]) + base; m[o] = (uint8_t)v; m[o + 1] = (uint8_t)(v >> 8); }
+        }
+        if (m.size() < 0x30 || std::memcmp(&m[0x10], "Townes", 6)) { err = name + ": no module header"; return false; }
+        uint32_t data = u32(&m[0x24]), csel = u16(&m[0x28]), dsel = u16(&m[0x2A]), n = u16(&m[0x2E]);
+        if (0x30 + 8 * n > m.size()) { err = name + ": its records run past the image"; return false; }
+        for (uint32_t r = 0; r < n; ++r) {
+            uint8_t* p = &m[0x30 + 8 * r];
+            uint32_t slot = u32(p), s = slot & 0x7FFFFFFF, off = u32(p + 4);
+            if (s + 6 > img.size()) { err = name + ": a record names a slot past the table"; return false; }
+            std::memcpy(p, &img[s], 6);
+            p[6] = p[7] = 0;
+            if (!(slot >> 31)) {
+                put32(&img[s], off);
+                img[s + 4] = (uint8_t)csel; img[s + 5] = (uint8_t)(csel >> 8);
+            }
+        }
+        if (data) datas.push_back({data, (uint16_t)dsel});
+        img.resize(base);
+        img.insert(img.end(), m.begin(), m.end());
+    }
+    for (size_t k = 0; k < datas.size(); ++k) {
+        uint8_t* p = &img[0x200 + 8 * k];
+        put32(p, datas[k].first);
+        p[4] = (uint8_t)datas[k].second; p[5] = (uint8_t)(datas[k].second >> 8); p[6] = p[7] = 0;
+    }
+    return true;
+}
+
 void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>& tbios) {
+    boot_towns(m, tbios);
+    run386_load(m, c, p);
+}
+
+void boot_towns(Machine& m, const std::vector<uint8_t>& tbios) {
     m.map_ram(0, 0xC0000);                              // the first 768 KB (Phar Lap's buffer is there)
     m.map_ram(0x100000, (uint32_t)tbios.size());
     m.write_block(0x100000, tbios.data(), (uint32_t)tbios.size());
+    m.tbios_size = (uint32_t)tbios.size();
+}
+
+// What a program's end undoes before the next one runs (DOS, RUN386): its files closed, the
+// protected-mode vectors it set back to none, its memory blocks given back. TBIOS stays, with
+// what the program left in its work areas (ABEL's start: OPNG's there, on the oracle), and so
+// do the machine's devices.
+void run386_end(Machine& m) {
+    for (size_t h = 5; h < m.handles.size(); ++h) {
+        if (m.handles[h].f) std::fclose(m.handles[h].f);
+        m.handles[h] = Machine::Handle{};
+    }
+    for (auto& v : m.pm_vector) v = IntVector{};
+    for (auto& t : m.t97)
+        if (t.on) { unknown("a timer BIOS timer left on at a program's end"); t.on = false; }
+    m.search_dirs.clear();
+    m.exited = false;
+}
+
+void run386_load(Machine& m, X86Cpu& c, const P3& p) {
     // the program's segment: its image, and the stack up to the page its top lies in (*inferred*:
     // 0x14000 for an image of 0x11F17 and a stack top of 0x13F20); a program that asks for all the
     // memory there is (max extra 0xFFFFFFFF) gets what the machine's RUN386 gives (the profile)
@@ -554,9 +759,11 @@ void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>&
     }
     uint32_t size = p.max_extra == 0xFFFFFFFFu ? pr.prog_limit_all + 1 : (end + 0xFFF) & ~0xFFFu;
     m.map_ram(base, size);
+    for (uint32_t a = base; a < base + size; a += 0x1000)   // a program after another: its memory fresh
+        if (uint8_t* h = m.host(a)) std::memset(h, 0, 0x1000);
     m.write_block(base + p.base_offset, p.image.data(), (uint32_t)p.image.size());
     // the descriptors as the Towns has them (towns.SELECTORS)
-    const uint32_t tb = (uint32_t)tbios.size() - 1;
+    const uint32_t tb = m.tbios_size - 1;
     m.set_desc(0x0C, base, size - 1);  m.set_desc(0x14, base, size - 1);
     m.set_desc(0x04, 0xB7870, 0xFF);   m.set_desc(0x24, 0xB7870, 0xFF);   m.set_desc(0x2C, 0xB7820, 0x3E);
     m.set_desc(0x1C, 0x80000000u, 0x7FFFF); m.set_desc(0x34, 0, 0xFFFFF);

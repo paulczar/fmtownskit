@@ -8,6 +8,7 @@
 // taken at a safe point (x86_poll): EFLAGS, CS and the resume address pushed, IF cleared, the
 // handler called; its `iretd` comes back to the poll.
 #include "towns.h"
+#include <algorithm>
 #include <cstdlib>
 
 using towns::g_towns;
@@ -126,6 +127,26 @@ void x86_poll(X86Cpu& c) {
         take(c, vec);
         m.advance(c.clocks);
     }
+    while (c.fl & X86_IF) {             // the timer BIOS's callbacks (int 97h), as its interrupt calls them
+        int n = m.t97_due();
+        if (n < 0) break;
+        const towns::Machine::Timer97& t = m.t97[n];
+        uint32_t r[8], fl = c.fl, resume = c.eip;
+        uint16_t s[6];
+        std::copy_n(c.r, 8, r);
+        std::copy_n(c.sreg, 6, s);
+        push32(c, c.sreg[1]);
+        push32(c, resume);
+        c.fl &= ~(X86_IF | X86_TF);
+        x86_load_seg(c, 1, t.sel);
+        X86Func f = find(c, t.sel, t.off, resume);
+        f(c);
+        if (c.eip != resume) x86_fault(c, resume, "a timer BIOS callback returned elsewhere");
+        std::copy_n(r, 8, c.r);
+        for (int k = 0; k < 6; ++k) x86_load_seg(c, k, s[k]);
+        c.fl = fl;
+        m.advance(c.clocks);
+    }
     uint64_t next = m.next_event();
     int64_t left = (int64_t)(next - c.clocks);
     c.budget = (int32_t)(left < 64 ? 64 : left > (1 << 30) ? (1 << 30) : left);
@@ -145,6 +166,7 @@ void x86_int(X86Cpu& c, int n, uint32_t next) {
     }
     case 0x90: m.int90(c); break;
     case 0x8E: m.int8e(c); break;
+    case 0x97: m.int97(c); break;
     case 0xFD: m.intfd(c); break;
     default: {
         char why[64];

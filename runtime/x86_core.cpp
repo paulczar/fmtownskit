@@ -34,9 +34,22 @@ X86Func x86_lookup(const X86Module* m, uint32_t addr) {
     return lo < m->nfuncs && m->funcs[lo].addr == addr ? m->funcs[lo].fn : nullptr;
 }
 
+static const X86Module* g_parked[16];
+static int g_nparked = 0;
+
+void x86_park(const X86Module* m, bool parked) {
+    int k = 0;
+    while (k < g_nparked && g_parked[k] != m) ++k;
+    if (parked && k == g_nparked && g_nparked < 16) g_parked[g_nparked++] = m;
+    if (!parked && k < g_nparked) g_parked[k] = g_parked[--g_nparked];
+}
+
 X86Func x86_lookup_cs(uint16_t cs, uint32_t addr) {
     for (int i = 0; i < g_x86_nmodules; ++i) {
         const X86Module* m = g_x86_modules[i];
+        bool parked = false;
+        for (int k = 0; k < g_nparked; ++k) parked |= g_parked[k] == m;
+        if (parked) continue;
         if (m->cs == cs || m->cs == 0)
             if (X86Func f = x86_lookup(m, addr)) return f;
     }

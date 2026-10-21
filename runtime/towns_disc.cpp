@@ -194,7 +194,23 @@ static std::string disc_path(const std::string& path) {
     for (auto& ch : want) if (ch == '/') ch = '\\';
     while (!want.empty() && want[0] == '\\') want.erase(0, 1);
     while (!want.empty() && want.back() == '\\') want.pop_back();
-    return want;
+    // each name cut to 8.3, as DOS cuts what it is given (ABEL's OPNG asks for GSCAPTALUP.FMB,
+    // and gets GSCAPTAL.FMB)
+    std::string out, part;
+    want += '\\';
+    for (char ch : want) {
+        if (ch != '\\') { part += ch; continue; }
+        size_t dot = part.find('.');
+        std::string base = part.substr(0, dot), ext = dot == std::string::npos ? "" : part.substr(dot + 1);
+        if (part != "." && part != "..") {
+            if (base.size() > 8) base.resize(8);
+            if (ext.size() > 3) ext.resize(3);
+            part = ext.empty() ? base : base + "." + ext;
+        }
+        out += (out.empty() ? "" : "\\") + part;
+        part.clear();
+    }
+    return out;
 }
 
 bool Disc::find(const std::string& path, DiscFile& out) {
