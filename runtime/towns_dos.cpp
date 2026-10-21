@@ -82,7 +82,8 @@ void Machine::int21(X86Cpu& c) {
             return;
         case 0x0F: {                                // a protected-mode address made real (the program's
             uint32_t lin = c.sbase[0] + c.r[3];     // image is below 1 MB on the Towns: physical 0x49000)
-            uint32_t phys = lin >= 0x200000 && lin < 0x300000 ? lin - 0x200000 + 0x49000 : lin;
+            const uint32_t pb = profile->prog_base;
+            uint32_t phys = lin >= pb && lin < pb + 0x100000 ? lin - pb + profile->prog_phys : lin;
             c.r[1] = ((phys >> 4) << 16) | (phys & 0xF);
             set_cf(c, false);
             return;
@@ -289,10 +290,16 @@ void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>&
     m.map_ram(0x100000, (uint32_t)tbios.size());
     m.write_block(0x100000, tbios.data(), (uint32_t)tbios.size());
     // the program's segment: its image, and the stack up to the page its top lies in (*inferred*:
-    // 0x14000 for an image of 0x11F17 and a stack top of 0x13F20)
-    uint32_t base = 0x200000;
+    // 0x14000 for an image of 0x11F17 and a stack top of 0x13F20); a program that asks for all the
+    // memory there is (max extra 0xFFFFFFFF) gets what the machine's RUN386 gives (the profile)
+    const Profile& pr = *m.profile;
+    uint32_t base = pr.prog_base;
     uint32_t end = std::max(p.base_offset + (uint32_t)p.image.size(), p.esp);
-    uint32_t size = (end + 0xFFF) & ~0xFFFu;
+    if (p.max_extra == 0xFFFFFFFFu && !pr.prog_limit_all) {
+        std::fprintf(stderr, "towns: the program asks for all memory; profile %s does not say how much\n", pr.name);
+        throw Stop{2};
+    }
+    uint32_t size = p.max_extra == 0xFFFFFFFFu ? pr.prog_limit_all + 1 : (end + 0xFFF) & ~0xFFFu;
     m.map_ram(base, size);
     m.write_block(base + p.base_offset, p.image.data(), (uint32_t)p.image.size());
     // the descriptors as the Towns has them (towns.SELECTORS)
@@ -301,7 +308,7 @@ void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>&
     m.set_desc(0x04, 0xB7870, 0xFF);   m.set_desc(0x24, 0xB7870, 0xFF);   m.set_desc(0x2C, 0xB7820, 0x3E);
     m.set_desc(0x1C, 0x80000000u, 0x7FFFF); m.set_desc(0x34, 0, 0xFFFFF);
     m.set_desc(0x104, 0x80000000u, 0x7FFFF); m.set_desc(0x10C, 0x80100000u, 0x7FFFF); m.set_desc(0x114, 0x81000000u, 0x1FFFF);
-    m.set_desc(0x40, 0, 0x1FFFFF); m.set_desc(0x48, 0x80000000u, 0x7FFFF); m.set_desc(0x60, 0, 0xFFFFF);
+    m.set_desc(0x40, 0, pr.ram_limit); m.set_desc(0x48, 0x80000000u, 0x7FFFF); m.set_desc(0x60, 0, 0xFFFFF);
     m.set_desc(0x100, 0xFFFC0000u, 0x3FFFF); m.set_desc(0x108, 0xFFFC0000u, 0x3FFFF);
     m.set_desc(0x110, 0x100000, tb); m.set_desc(0x118, 0x100000, tb);
     m.set_desc(0x120, 0x80000000u, 0x7FFFF); m.set_desc(0x128, 0x80100000u, 0x7FFFF);

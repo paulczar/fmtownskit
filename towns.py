@@ -155,6 +155,23 @@ PAGES_MARTY = [
     (0xFFFC0000, 0x00FC0000, 0x40000),
 ]
 
+# What RUN386 leaves a program, by machine, RAM and the disc's own boot (runtime/towns.h,
+# Profile): the program's segment 0x0C/0x14 (linear base, physical, its limit when the P3's
+# maximum extra is 0xFFFFFFFF, "all memory") and selector 0x40's limit (all of RAM, less what
+# a driver keeps at its top). Read in MAME's dumps (mamedump); None where not read.
+PROFILES = {
+    # MAME's fmtowns as it comes, The Queen of Duellist's boot (its image's own size asked)
+    'towns2m': dict(ram_mb=2, prog_base=0x200000, prog_phys=0x49000, prog_limit_all=None,
+                    ram_limit=0x1FFFFF),
+    # 4D Driving's boot (FORRBIOS.NSD at the top of RAM, selectors 0x4C/0x54), all memory asked
+    'towns2m+nsd': dict(ram_mb=2, prog_base=0x200000, prog_phys=0x49000, prog_limit_all=0x169FFF,
+                        ram_limit=0x1F7FFF),
+    'towns4m+nsd': dict(ram_mb=4, prog_base=0x408000, prog_phys=0x49000, prog_limit_all=0x368FFF,
+                        ram_limit=0x3F7FFF),
+    'marty2m+nsd': dict(ram_mb=2, prog_base=0x200000, prog_phys=0x47000, prog_limit_all=0x184FFF,
+                        ram_limit=0x1F7FFF),
+}
+
 # Software interrupts a Towns program may raise. 21h is DOS (and the
 # extender's own functions at AH=25h); 93h is the Towns disk BIOS, whose
 # AL is the device (0xC0 the CD-ROM).

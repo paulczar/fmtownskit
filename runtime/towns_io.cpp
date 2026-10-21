@@ -209,7 +209,7 @@ uint8_t Machine::in8(uint32_t port) {
     case 0x4E8: case 0x4E9: case 0x4EA: case 0x4EB:
         return sound_in8(port);
     case 0x5C8: return 0;
-    case 0x5E8: return 2;           // MB of RAM (MAME's fmtowns: 2)
+    case 0x5E8: return (uint8_t)profile->ram_mb;    // MB of RAM
     case 0x5EC: return 0;
     case 0xFD90: return v.pal_sel;
     case 0xFD92: case 0xFD94: case 0xFD96: {

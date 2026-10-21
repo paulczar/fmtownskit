@@ -14,6 +14,10 @@ namespace towns {
 
 Machine* g_towns;
 
+// MAME's fmtowns as it comes (2 MB), read under the first game (towns.PROFILES); how much a
+// program asking for all memory gets was not read there (0: refused)
+const Profile kTowns2M = {"towns2m", 2, 0x200000, 0x49000, 0, 0x1FFFFF};
+
 static std::set<std::string> g_unknown;
 void unknown(const char* fmt, ...) {
     char buf[256];

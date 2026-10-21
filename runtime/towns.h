@@ -23,6 +23,22 @@ namespace towns {
 constexpr uint32_t kClock = 16000000;           // the 386DX of the Model 1/2 (MAME's fmtowns)
 constexpr uint32_t kFrameClocks = kClock / 60;  // VSYNC at 60 Hz (MAME's screen)
 
+// ---- the machine a run stands in for ------------------------------------------------------
+// What RUN386 and TownsOS leave differently by model, RAM and the disc's own boot (a driver
+// kept at the top of RAM moves the limits), read from the oracle's dumps: towns.PROFILES has
+// the figures read so far and where. The default is MAME's fmtowns under the first game; a
+// port whose boot differs declares its own from its dumps.
+struct Profile {
+    const char* name;
+    uint32_t ram_mb;            // port 0x5E8
+    uint32_t prog_base;         // the program's segment (0x0C, 0x14), linear
+    uint32_t prog_phys;         // ... and physical (Phar Lap 250Fh makes real-mode addresses of it)
+    uint32_t prog_limit_all;    // its limit when the P3 asks for all memory (max extra 0xFFFFFFFF;
+                                // 0: not read, such a program is refused)
+    uint32_t ram_limit;         // selector 0x40: all of RAM
+};
+extern const Profile kTowns2M;  // MAME's fmtowns as it comes: 2 MB
+
 // ---- the disc: a cue sheet and its track files, the data track's ISO 9660 ----------------
 struct Track {
     int number = 0;
@@ -112,6 +128,7 @@ void unknown(const char* fmt, ...);
 class Machine {
 public:
     Machine();
+    const Profile* profile = &kTowns2M; // set before boot_run386
     ~Machine();
     void townsos();                     // the machine as TownsOS hands it to a program
 
