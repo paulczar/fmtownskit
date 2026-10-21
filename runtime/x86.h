@@ -185,6 +185,7 @@ void     x86_far(X86Cpu& c, uint32_t sel, uint32_t off, bool call, int n, uint32
 void     x86_retf(X86Cpu& c, int n, uint32_t extra);
 void     x86_iret(X86Cpu& c, int n);
 void     x86_system(X86Cpu& c, uint32_t site, const char* what);      // lgdt, mov crN, hlt, ...
+bool     x86_lsl(X86Cpu& c, uint32_t sel, uint32_t& limit);           // false: no such selector
 void     x86_call(X86Cpu& c, uint32_t target);           // a call through a register or memory
 void     x86_jump(X86Cpu& c, uint32_t target);           // a jump the function does not hold
 void     x86_poll(X86Cpu& c);                            // the budget is spent: time, interrupts

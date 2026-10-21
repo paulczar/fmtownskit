@@ -158,7 +158,8 @@ public:
     bool vblank = false;
     uint64_t vblank_end = 0;
     Pic pic[2];
-    IntVector pm_vector[256];           // Phar Lap 2506h: always in protected mode
+    IntVector pm_vector[256];           // Phar Lap 2504h, 2506h, 2507h: taken in protected mode
+    uint32_t rm_vector[256] = {};       // Phar Lap 2505h, 2507h: kept, never taken
     void raise_irq(int irq, bool level);
     int pending_irq();                  // the vector to take, or -1
     void advance(uint64_t to);          // run the machine's clocks up to `to`
@@ -190,6 +191,13 @@ public:
     // the Towns pad as the player holds it (kPad* bits): Run and Select are wired as left with
     // right and up with down, as MAME's townspad has them
     void set_pad(int port, unsigned held);
+    // the mouse in the second port, as MAME's fmtowns has one there (an MSX mouse: each change
+    // of its pin 8 -- 0x4D6 bit 5 -- gives the next nibble of the X and Y movement since the
+    // last read, a pause of over 3 ms starting again from the first); `x`, `y` where the host
+    // has moved it, `buttons` active low in bits 4 and 5
+    struct Mouse { bool present = true; uint16_t data = 0; uint8_t stat = 3, pin8 = 0;
+                   uint64_t last = 0; int16_t read_x = 0, read_y = 0, x = 0, y = 0;
+                   uint8_t buttons = 0xFF; } mouse;
     void vram_pages();                  // map VRAM's pages as host memory, or not (write mask)
     void draw_sprites();
     // the frame as MAME's screen_update draws it: width x height of 0xRRGGBB
@@ -208,7 +216,12 @@ public:
     bool exited = false;
     int exit_code = 0;
     void int21(X86Cpu& c);
-    void int93(X86Cpu& c, uint32_t eax, uint32_t& ret_eax, uint32_t rm_ds, uint32_t rm_es);
+    // the CD BIOS: `buf` the linear address of the call's buffer (DS:DI in real mode through
+    // Phar Lap's 2511h; DS:EDI when the program raises int 93h itself)
+    void int93(X86Cpu& c, uint32_t eax, uint32_t& ret_eax, uint32_t buf);
+    bool cd_paused = false;
+    void int90(X86Cpu& c);              // the keyboard BIOS (KYB_*), as FORRBIOS.NSD answers it
+    void int8e(X86Cpu& c);              // KimG (the kanji input manager), as FORRBIOS.NSD answers it
     void intfd(X86Cpu& c);
 
     // the host's turn at each VSYNC (headless runs save frames here, and may stop the run by

@@ -5,7 +5,10 @@
         --raw tbios=TBIOS.BIN@110:20-100 \\
         [--optest] [--selftest 3]
 
---exp NAME=FILE@CS[+SEED,...]      a Phar Lap P3 program, run under code selector CS
+--exp NAME=FILE@CS[/END][+SEED,...]
+                                   a Phar Lap P3 program, run under code selector CS;
+                                   with /END, every symbol it keeps below END (where its
+                                   code ends) is a seed too, and symbols name the C++
 --raw NAME=FILE@CS[:FROM-TO][+SEED,...]
                                    a flat image at offset 0 of its segment, its
                                    entries the far pointers stored in FROM-TO
@@ -22,6 +25,8 @@ program's code segment. Writes, into --out:
     CMakeLists.txt          the library `recomp`, the runtime, the self-test
     report.txt              discovery's report per module
     selftest/<name>.txt     with --selftest N: N vectors per function from i386emu
+                            (--slice LO-HI: those functions only, <name>_<lo>-<hi>.txt;
+                            --jobs N: N processes)
     selftest/optest.txt     with --optest: the emitter's own test (module OPTEST)
 """
 import argparse
@@ -86,13 +91,16 @@ def parse(spec, raw):
     name, _, rest = spec.partition('=')
     rest, _, seeds = rest.partition('+')
     path, _, sel = rest.rpartition('@')
-    far = None
+    far = symend = None
+    if not raw and '/' in sel:
+        sel, _, symend = sel.partition('/')
+        symend = int(symend, 16)
     if raw and ':' in sel:
         sel, _, rng = sel.partition(':')
         lo, hi = rng.split('-')
         far = (int(lo, 16), int(hi, 16))
     seeds = [int(s, 16) for s in seeds.split(',') if s]
-    return name, path, int(sel, 16), far, seeds
+    return name, path, int(sel, 16), far if raw else symend, seeds
 
 
 def write_module(out, m, per_file=6000):
@@ -102,7 +110,7 @@ def write_module(out, m, per_file=6000):
     with Out(os.path.join(out, '%s_funcs.h' % ns)) as f:
         f.write('#pragma once\n#include "x86.h"\nnamespace %s {\n' % ns)
         for a in funcs:
-            f.write('void f_%08x(X86Cpu& c);\n' % a)
+            f.write('void f_%08x(X86Cpu& c);%s\n' % (a, '  // ' + p.names[a] if a in p.names else ''))
         f.write('}\n')
     files, chunk, count, k = [], [], 0, 0
 
@@ -153,15 +161,20 @@ def main(argv=None):
     ap.add_argument('--optest', action='store_true')
     ap.add_argument('--selftest', type=int, default=0, metavar='N')
     ap.add_argument('--limit', type=int, default=20000, help="a vector's step limit in the interpreter")
+    ap.add_argument('--slice', metavar='LO-HI', help="vectors only for the functions in LO-HI (hex), to "
+                    "selftest/<name>_<lo>-<hi>.txt")
+    ap.add_argument('--jobs', type=int, default=1, help='processes making vectors')
     a = ap.parse_args(argv)
     os.makedirs(os.path.join(a.out, 'selftest'), exist_ok=True)
     mods = []
     from .. import exp as expmod
     for spec in a.exp:
-        name, path, cs, _, seeds = parse(spec, False)
+        name, path, cs, symend, seeds = parse(spec, False)
         e = expmod.Exp(open(path, 'rb').read())
+        if symend is not None:
+            seeds += [off for off, _, _ in e.symbols if off < symend and off != e.eip]
         prog = discover.Program(e.image, e.base_offset, [e.eip] + seeds, name,
-                                table_end=e.table_end if e.symbols else None)
+                                table_end=e.table_end if e.symbols else None, names=e.names())
         mods.append(Module(name, prog, cs, e.image, e.base_offset))
     for spec in a.raw:
         name, path, cs, far, seeds = parse(spec, True)
@@ -188,13 +201,16 @@ def main(argv=None):
         rel = [os.path.relpath(s, a.out).replace('\\', '/') for s in srcs]
         f.write(CMAKE.format(rt=RUNTIME.replace('\\', '/'), srcs='\n    '.join(rel)))
     # vectors
+    lo, hi = (int(x, 16) for x in a.slice.split('-')) if a.slice else (0, 1 << 32)
     for m in sorted(mods, key=lambda m: m.name != 'optest'):       # the quick one first
         per = a.selftest if m.name != 'optest' else max(a.selftest, 3)
         if m.name != 'optest' and not a.selftest:
             continue
-        lines, done, skipped = ST.vectors(m.name.upper(), [(m.base, m.image)], sorted(m.prog.functions), per,
-                                          limit=a.limit, cs=m.cs)
-        with Out(os.path.join(a.out, 'selftest', '%s.txt' % m.name.lower())) as f:
+        funcs = sorted(f for f in m.prog.functions if m.name == 'optest' or lo <= f < hi)
+        lines, done, skipped = ST.vectors(m.name.upper(), [(m.base, m.image)], funcs, per,
+                                          limit=a.limit, cs=m.cs, jobs=a.jobs)
+        part = '_%x-%x' % (lo, hi) if a.slice and m.name != 'optest' else ''
+        with Out(os.path.join(a.out, 'selftest', '%s%s.txt' % (m.name.lower(), part))) as f:
             f.write('\n'.join(lines) + '\n')
         print('%s: %d vectors, %d runs reached the machine or the step limit' % (m.name, done, skipped))
 

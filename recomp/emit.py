@@ -172,7 +172,7 @@ class Emitter:
             nxt = a + i.size
             if not self.ends(i) and (k + 1 >= len(body) or body[k + 1] != nxt):
                 labels.add(nxt)
-        out = ['void f_%08x(X86Cpu& c) {' % f]
+        out = (['// %s' % p.names[f]] if f in p.names else []) + ['void f_%08x(X86Cpu& c) {' % f]
         if body and body[0] != f:
             out.append('    goto L_%x;' % f)
             labels.add(f)
@@ -192,6 +192,8 @@ class Emitter:
                         break
                 out.append('    X86_TICK(c, %d);' % n)
                 tick_pending = False
+            if a != f and a in p.names:
+                out.append('    // %s:' % p.names[a])
             out.append('    // %06x  %s %s' % (a, i.op, i386.format_ops(i)))
             out.append('    X86_AT(c, 0x%xu);' % a)
             out.extend('    ' + line for line in self.insn(i, inbody, labels))
@@ -500,6 +502,16 @@ class Emitter:
         if op == 'out':
             port = hx(ops[0][1]) if ops[0][0] == 'i' else '(c.r[2] & 0xFFFFu)'
             L.append('x86_out(c, %s, %d, %s);' % (port, ops[1][2], self.rd(i, ops[1])))
+            return L
+        if op == 'arpl':        # a selector's RPL raised to another's (MetaWare's start, on the
+            # PSP's and the environment's selectors): arithmetic, no descriptor read
+            L.append('{ uint32_t d = %s, s = %s; if ((d & 3) < (s & 3)) { %s c.fl |= X86_ZF; } '
+                     'else c.fl &= ~X86_ZF; }' % (self.rd(i, ops[0], 2), self.rd(i, ops[1], 2),
+                                                 self.wr(i, ops[0], '(d & ~3u) | (s & 3)', 2)))
+            return L
+        if op == 'lsl':         # a segment's limit (MetaWare's start asks DS's): the machine's
+            L.append('{ uint32_t v; if (x86_lsl(c, %s, v)) { %s c.fl |= X86_ZF; } else c.fl &= ~X86_ZF; }'
+                     % (self.rd(i, ops[1], 2), self.wr(i, ops[0], 'v')))
             return L
         if op in SYSTEM:
             L.append('x86_system(c, 0x%xu, "%s");' % (a, op))

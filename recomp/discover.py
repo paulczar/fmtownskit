@@ -30,8 +30,9 @@ ENDS = ('ret', 'retf', 'iret', 'iretd', 'hlt', 'ljmp')
 
 
 class Program:
-    def __init__(self, image, base=0, entries=(), name='prog', far_table=None, table_end=None):
+    def __init__(self, image, base=0, entries=(), name='prog', far_table=None, table_end=None, names=None):
         self.img, self.base, self.name = image, base, name
+        self.names = names or {}       # offset -> a program's symbols there (for the C++'s comments)
         self.table_end = table_end     # a program's symbols: where a read table must stop
         self.insn = {}                 # addr -> Insn
         self.functions = set()
@@ -134,6 +135,8 @@ class Program:
     def _table(self, pc, i):
         o = i.ops[0]
         _, seg, base, index, scale, disp, _ = o
+        if base is not None and index is None and i.op == 'jmp' and i.asize == 4:
+            return self._placed(pc, i, disp, seg)
         if base is not None or index is None or scale != 4 or i.asize != 4:
             return None
         if not 0 <= disp - self.base < len(self.img):
@@ -154,6 +157,35 @@ class Program:
                     break
             out.append(v)
         self.tables[pc] = (disp, out, bound is not None)
+        return out
+
+    def _placed(self, pc, i, disp, seg):
+        """A table placed in the code after its jump, `jmp cs:[reg + table]`, the register an
+        index already scaled (hand-written drawing code). It lies past the jump and inside the
+        same symbol's code (with no symbols: addressed through CS), and ends where the first
+        code it jumps to begins; read while its entries hold, as a table with no bound."""
+        if not pc < disp or not 0 <= disp - self.base < len(self.img):
+            return None
+        end = self.table_end(pc) if self.table_end else None
+        if end is None and seg != 1 or end is not None and disp >= end:
+            return None
+        out, low = [], end if end is not None else self.base + len(self.img)
+        for k in range(self.cut.get(pc, 256)):
+            a = disp + 4 * k
+            if a + 4 > low:
+                break
+            v = int.from_bytes(self.img[a - self.base:a - self.base + 4], 'little')
+            if v:
+                try:
+                    self.at(v)
+                except Refused:
+                    break
+                if v > disp:
+                    low = min(low, v)
+            out.append(v)
+        if not out:
+            return None
+        self.tables[pc] = (disp, out, False)
         return out
 
     def _bound(self, pc, index):
@@ -250,7 +282,7 @@ def load(path, raw=False, base=0, seeds=(), far_table=None, name=None, symbol_se
     if symbol_seeds is not None:
         seeds += [off for off, _, _ in e.symbols if off < symbol_seeds and off != e.eip]
     return Program(e.image, e.base_offset, [e.eip] + seeds, name or path,
-                   table_end=e.table_end if e.symbols else None)
+                   table_end=e.table_end if e.symbols else None, names=e.names())
 
 
 def main(argv=None):

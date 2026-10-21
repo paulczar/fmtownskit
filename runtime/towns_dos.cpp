@@ -63,10 +63,32 @@ void Machine::int21(X86Cpu& c) {
         return;
     }
     case 0x19: s8(c, 0, (uint32_t)(drive - 'A')); return;
+    case 0x30:                                      // the version: DOS 3.10, and RUN386's "DX" above
+        c.r[0] = 0x44580A03u;                       // (the oracle: EAX 44580A03h, EBX FF00h)
+        c.r[3] = 0xFF00;
+        s16(c, 1, 0);
+        return;
     case 0x25: {                                    // Phar Lap
         switch (al) {
-        case 0x06:                                  // a vector always taken in protected mode
-            pm_vector[c.r[1] & 0xFF] = {c.sreg[3], c.r[2], true};
+        case 0x02:                                  // get the protected-mode vector CL: ES:EBX
+            x86_load_seg(c, 0, pm_vector[c.r[1] & 0xFF].sel);
+            c.r[3] = pm_vector[c.r[1] & 0xFF].off;
+            set_cf(c, false);
+            return;
+        case 0x03:                                  // get the real-mode vector CL: EBX (seg:off)
+            c.r[3] = rm_vector[c.r[1] & 0xFF];
+            set_cf(c, false);
+            return;
+        case 0x04: case 0x06: case 0x07:           // set the protected-mode vector CL to DS:EDX
+            // (06h: always taken in protected mode; 07h: and the real-mode one to EBX). Every
+            // interrupt here is taken in protected mode; a vector set back to what 02h gave
+            // before any was set (selector 0) is none.
+            pm_vector[c.r[1] & 0xFF] = {c.sreg[3], c.r[2], c.sreg[3] != 0};
+            if (al == 0x07) rm_vector[c.r[1] & 0xFF] = c.r[3];
+            set_cf(c, false);
+            return;
+        case 0x05:                                  // set the real-mode vector CL to EBX
+            rm_vector[c.r[1] & 0xFF] = c.r[3];
             set_cf(c, false);
             return;
         case 0x0D:                                  // real-mode link information (RUN386's, on the Towns)
@@ -101,7 +123,8 @@ void Machine::int21(X86Cpu& c) {
             uint32_t save_edx = c.r[2];
             c.r[2] = edx;
             uint32_t ret = eax;
-            int93(c, eax, ret, rds, res);
+            (void)res;
+            int93(c, eax, ret, rds * 16 + (c.r[7] & 0xFFFF));
             mem_write(blk + 0xA, 4, ret);
             c.r[0] = ret;
             c.r[2] = save_edx;
@@ -186,6 +209,18 @@ void Machine::int21(X86Cpu& c) {
         set_cf(c, false);
         return;
     }
+    case 0x44: {                                    // IOCTL 00h, a handle's device information:
+        uint32_t h = c.r[3] & 0xFFFF;               // a file (bit 7 clear), not written (bit 6), on
+        if (al != 0x00 || h >= handles.size() || !handles[h].used) break;   // the CD's drive: 50h
+        uint32_t info = 0x40 | (uint32_t)((handles[h].host ? 'A' : drive) - 'A');
+        s16(c, 2, info);
+        s16(c, 0, info);
+        set_cf(c, false);
+        return;
+    }
+    case 0xFF:                                      // not DOS's (an extender's test, DX=78h):
+        unknown("int 21h AX=%04X DX=%04X: none (as on the Towns)", c.r[0] & 0xFFFF, c.r[2] & 0xFFFF);
+        return;                                     // RUN386 leaves every register as it was
     case 0x48: {                                    // memory: EBX pages of 4 KB, a selector in AX
         uint32_t size = c.r[3] * 4096;
         if (!size || next_block + size > 0x01000000u) { set_cf(c, true); s16(c, 0, 8); return; }
@@ -221,9 +256,8 @@ static uint32_t from_msf(const uint8_t* p) {
     return f >= 150 ? f - 150 : 0;
 }
 
-void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t rm_ds, uint32_t) {
+void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
     uint8_t ah = (eax >> 8) & 0xFF, al = eax & 0xFF;
-    uint32_t buf = rm_ds * 16 + (c.r[7] & 0xFFFF);
     if (trace_int) std::fprintf(stderr, "int 93h AX=%04X CX=%04X BX=%04X buffer %05x\n", eax & 0xFFFF, c.r[1] & 0xFFFF,
                                 c.r[3] & 0xFFFF, buf);
     if (al != 0xC0) {
@@ -242,7 +276,26 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t rm_ds, uint
         if (trace_int) std::fprintf(stderr, "  CD-DA %u to %u (frame %llu)\n", cd.from, cd.to, (unsigned long long)frame);
         return;
     }
+    case 0x53: {                                    // where the play is: AL and the buffer
+        // (*inferred*: AL 0 and positions 0 while nothing plays, as FORRBIOS.NSD answered on
+        // the oracle before any play; the buffer's bytes as the program reads them: [1], the
+        // track's [3..5], the disc's [7..9])
+        uint8_t p[10] = {};
+        write_block(buf, p, sizeof p);
+        ret &= 0xFFFFFF00u;
+        return;
+    }
+    case 0x55:                                      // pause
+        cd_paused = cd.playing;
+        if (cd.playing) cd_stop();
+        return;
+    case 0x56:                                      // go on after a pause: AH=23h with none
+        if (!cd_paused) { ret = (ret & 0xFFFF00FFu) | 0x2300; return; }
+        cd_paused = false;
+        cd_play(cd.lba, cd.to);
+        return;
     case 0x52:                                      // stop
+        cd_paused = false;
         cd_stop();
         if (trace_int) std::fprintf(stderr, "  CD-DA stop (frame %llu)\n", (unsigned long long)frame);
         return;
@@ -265,6 +318,46 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t rm_ds, uint
     char why[64];
     std::snprintf(why, sizeof why, "int 93h AX=%04Xh: no service", eax & 0xFFFF);
     x86_fault(c, c.eip, why);
+}
+
+// The keyboard BIOS, int 90h, as FORRBIOS.NSD answers it in protected mode (the program
+// pushes "DOSX" "BIOS" before each call): read on the oracle (tools/oracle.py --trace-calls at
+// each int and the instruction after it) with no key ever pressed -- AH 0 for every function,
+// KYB_read (AH=09h) DX FFFFh and BX FF00h, KYB_matrix (AH=0Ah) its 16 bytes at DS:EDI none down
+// (*inferred*: zeros).
+void Machine::int90(X86Cpu& c) {
+    uint8_t ah = (c.r[0] >> 8) & 0xFF;
+    if (trace_int) std::fprintf(stderr, "int 90h AX=%04X EBX=%08X ECX=%08X EDX=%08X\n", c.r[0] & 0xFFFF, c.r[3], c.r[1], c.r[2]);
+    switch (ah) {
+    case 0x00: case 0x01: case 0x02: case 0x05: case 0x06:   // init, buffer, code, click, clear
+        break;
+    case 0x09:                                      // read a key: none
+        s16(c, 2, 0xFFFF);
+        s16(c, 3, 0xFF00);
+        break;
+    case 0x0A: {                                    // the key matrix
+        static const uint8_t none[16] = {};
+        write_block(c.sbase[3] + c.r[7], none, sizeof none);
+        break;
+    }
+    default: {
+        char why[64];
+        std::snprintf(why, sizeof why, "int 90h AX=%04Xh: no service", c.r[0] & 0xFFFF);
+        x86_fault(c, c.eip, why);
+    }
+    }
+    c.r[0] &= 0xFFFF00FFu;
+}
+
+// KimG, int 8Eh AX=CF00h (its client: set, get, pop), as FORRBIOS.NSD answers it: EAX 0, the
+// rest untouched (the oracle).
+void Machine::int8e(X86Cpu& c) {
+    if ((c.r[0] & 0xFFFF) != 0xCF00) {
+        char why[64];
+        std::snprintf(why, sizeof why, "int 8Eh AX=%04Xh: no service", c.r[0] & 0xFFFF);
+        x86_fault(c, c.eip, why);
+    }
+    c.r[0] = 0;
 }
 
 void Machine::intfd(X86Cpu& c) {

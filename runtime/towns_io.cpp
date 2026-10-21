@@ -202,7 +202,9 @@ uint8_t Machine::in8(uint32_t port) {
         int p = (port >> 1) & 1;
         uint8_t m = (uint8_t)((((pad_mask >> (p * 2)) & 1) << 4) | (((pad_mask >> (p * 2 + 1)) & 1) << 5)
                               | (((pad_mask >> (p + 4)) & 1) << 6));
-        return pad[p] & (0x0F | m);
+        uint8_t v = p == 1 && mouse.present
+            ? (uint8_t)((mouse.buttons & 0xF0) | ((mouse.data >> (4 * (3 - mouse.stat))) & 0x0F)) : pad[p];
+        return v & (0x0F | m);
     }
     case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
     case 0x4E0: case 0x4E1: case 0x4E2: case 0x4E3:
@@ -266,7 +268,22 @@ void Machine::out8(uint32_t port, uint8_t d) {
     case 0x458: v.mask_sel = d & 1; return;
     case 0x45A: case 0x45B: v.mask[((v.mask_sel & 1) << 1) + (port - 0x45A)] = d; vram_pages(); return;
     case 0x480: return;
-    case 0x4D6: pad_mask = d; return;
+    case 0x4D6: {
+        pad_mask = d;
+        uint8_t pin8 = (d >> 5) & 1;                // the second port's pin 8: the mouse's strobe
+        if (mouse.present && pin8 != mouse.pin8) {
+            if (now - mouse.last > kClock / 1000 * 3) mouse.stat = 3;   // MAME's 3 ms timeout
+            mouse.last = now;
+            mouse.stat = (mouse.stat + 1) & 3;
+            if (mouse.stat == 0) {
+                mouse.data = (uint16_t)(((uint8_t)(mouse.read_x - mouse.x) << 8) | (uint8_t)(mouse.read_y - mouse.y));
+                mouse.read_x = mouse.x;
+                mouse.read_y = mouse.y;
+            }
+        }
+        mouse.pin8 = pin8;
+        return;
+    }
     case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
     case 0x4E0: case 0x4E1: case 0x4E2: case 0x4E3: case 0x4EA: case 0x4EC:
     case 0x4F0: case 0x4F1: case 0x4F2: case 0x4F3: case 0x4F4: case 0x4F5: case 0x4F6: case 0x4F7: case 0x4F8:

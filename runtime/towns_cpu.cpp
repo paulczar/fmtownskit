@@ -84,6 +84,15 @@ void x86_system(X86Cpu& c, uint32_t site, const char* what) {
     x86_fault(c, site, why);
 }
 
+bool x86_lsl(X86Cpu&, uint32_t sel, uint32_t& limit) {
+    sel &= 0xFFFF;
+    if (sel > 0x1FFF || !(sel & ~3u)) return false;
+    const towns::Descriptor& d = g_towns->desc[(sel & 0x1FFC) >> 2];
+    if (!d.valid) return false;
+    limit = d.limit;
+    return true;
+}
+
 uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
     g_towns->advance(c.clocks);
     return g_towns->in(port, n);
@@ -130,10 +139,12 @@ void x86_int(X86Cpu& c, int n, uint32_t next) {
     case 0x21: m.int21(c); break;
     case 0x93: {
         uint32_t eax = c.r[0];
-        m.int93(c, c.r[0], eax, m.rm_buffer >> 4, m.rm_buffer >> 4);
+        m.int93(c, c.r[0], eax, c.sbase[3] + c.r[7]);
         c.r[0] = eax;
         break;
     }
+    case 0x90: m.int90(c); break;
+    case 0x8E: m.int8e(c); break;
     case 0xFD: m.intfd(c); break;
     default: {
         char why[64];

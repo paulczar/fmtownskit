@@ -65,6 +65,7 @@ void x86_far(X86Cpu&, uint32_t, uint32_t, bool, int, uint32_t) { stop("far trans
 void x86_retf(X86Cpu&, int, uint32_t) { stop("retf"); }
 void x86_iret(X86Cpu&, int) { stop("iret"); }
 void x86_system(X86Cpu&, uint32_t, const char* what) { stop(what); }
+bool x86_lsl(X86Cpu&, uint32_t, uint32_t&) { stop("lsl"); }
 void x86_poll(X86Cpu& c) { c.budget = 1 << 30; }
 [[noreturn]] void x86_fault(X86Cpu&, uint32_t, const char* why) { stop(why); }
 

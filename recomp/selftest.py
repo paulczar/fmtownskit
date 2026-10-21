@@ -121,20 +121,43 @@ def vector_line(mod, addr, regs_in, fl_in, res):
     return ' '.join(parts)
 
 
-def vectors(mod, image_load, entries, per, seed=1, limit=20000, cs=0):
-    """Lines for the C++ self-test, and counts."""
-    rnd = random.Random(seed)
-    lines, done, skipped = [], 0, 0
-    for f in entries:
-        for _ in range(per):
-            regs, fl = random_state(rnd)
-            res = run(image_load, f, regs, fl, limit, cs)
-            if res is None:
-                skipped += 1
-                continue
+_job = None
+
+
+def _start(job):
+    global _job
+    _job = job
+
+
+def _function(f):
+    """One function's vectors, from its own random states (seeded by its address, so that a
+    slice of the functions, or several processes, give the same vectors as one run)."""
+    mod, image_load, per, seed, limit, cs = _job
+    rnd = random.Random((seed << 32) ^ f)
+    lines, skipped = [], 0
+    for _ in range(per):
+        regs, fl = random_state(rnd)
+        res = run(image_load, f, regs, fl, limit, cs)
+        if res is None:
+            skipped += 1
+        else:
             lines.append(vector_line(mod, f, regs, fl, res))
-            done += 1
-    return lines, done, skipped
+    return lines, skipped
+
+
+def vectors(mod, image_load, entries, per, seed=1, limit=20000, cs=0, jobs=1):
+    """Lines for the C++ self-test, and counts; with jobs > 1, the functions shared among that
+    many processes (the lines in the same order)."""
+    job = (mod, image_load, per, seed, limit, cs)
+    if jobs > 1:
+        import multiprocessing
+        with multiprocessing.Pool(jobs, _start, (job,)) as pool:
+            results = pool.map(_function, entries, chunksize=4)
+    else:
+        _start(job)
+        results = [_function(f) for f in entries]
+    lines = [ln for r in results for ln in r[0]]
+    return lines, len(lines), sum(r[1] for r in results)
 
 
 # --- the optest: one-instruction functions ---------------------------------------
