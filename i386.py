@@ -4,9 +4,16 @@ What Towns programs are made of: 32-bit protected-mode code (and the odd
 16-bit routine), with the operand-size and address-size prefixes, segment
 overrides, REP/REPNE/LOCK, ModRM and SIB. Every instruction the 80386 has
 outside the x87 is decoded; what later CPUs added (CPUID, BSWAP, CMPXCHG,
-XADD, INVD, WBINVD, INVLPG, the CMOVs, ...) and the x87 escapes are
-refused with a reason, as data decoded as code is: the recompiler stops
-on them rather than guess.
+XADD, INVD, WBINVD, INVLPG, the CMOVs, ...) is refused with a reason, as
+data decoded as code is: the recompiler stops on them rather than guess.
+
+The x87's escapes (D8-DF) decode as one instruction, `esc N, r/m`, for
+the machines as MAME has them: the Towns' 386 and the Marty's 386SX with
+no coprocessor, where an escape reads its ModRM and does nothing. A
+program's start-up probe for an FPU (MetaWare's `fninit`, `fnstcw`, a
+control word compared with 0x33F) then finds none, and its library takes
+the software path. `check` holds an `esc` against capstone's x87 reading
+by its length and memory operand.
 
 An instruction is an `Insn`: its address and length, a mnemonic as
 capstone spells it (so the two can be held against each other), the
@@ -400,7 +407,12 @@ def decode(data, off, addr=None, bits=32):
     if b == 0xD7:
         ops.append(('m', i.seg, 3, None, 0, 0, 1)); return done('xlatb')
     if 0xD8 <= b <= 0xDF:
-        raise Refused('x87 escape %02x' % b)
+        # an x87 escape: `esc N, r/m` (N its six opcode bits), as a 386 with no coprocessor
+        # runs it -- the ModRM read, nothing done (MAME's i386_escape)
+        mod, reg, op = E(1)
+        ops.append(('i', ((b & 7) << 3) | reg, 1))
+        ops.append(op)
+        return done('esc')
     if 0xE0 <= b <= 0xE3:
         rel(1)
         if b == 0xE3:
@@ -664,6 +676,15 @@ def compare(i, c):
     """'' when this decoding and capstone's agree, else what differs."""
     if c.size != i.size:
         return 'length %d, capstone %d' % (i.size, c.size)
+    if i.op == 'esc':               # capstone reads the x87 instruction; the address must agree
+        if not c.mnemonic.startswith('f'):
+            return 'esc, capstone %s' % c.mnemonic
+        cut = (lambda o: o[:5] + (o[5] & 0xFFFF,)) if i.asize == 2 else (lambda o: o[:6])
+        mine = [cut(o) for o in _ours_for_cs(i) if o[0] == 'm']
+        theirs = [cut(o) for o in _cs_ops(c) if o[0] == 'm']
+        if mine != theirs:
+            return 'esc operand %s, capstone %s' % (mine, theirs)
+        return ''
     cm = c.mnemonic
     # later CPUs' readings of prefixes a 386 ignores: MPX, CET, TSX, and AMD's "rep ret"
     for p in ('bnd ', 'notrack ', 'xacquire ', 'xrelease '):
@@ -717,7 +738,10 @@ def check_range(data, base, addrs, md=None, quiet=False):
                 cs_refused += 1
             continue
         if c is None:
-            differ.append((a, 'capstone refuses %s' % i))
+            if i.op == 'esc':
+                refused['esc with no x87 reading (capstone refuses it; a 386 runs it)'] += 1
+            else:
+                differ.append((a, 'capstone refuses %s' % i))
             continue
         d = compare(i, c)
         if d:
@@ -735,6 +759,7 @@ def main(argv=None):
     ap.add_argument('--base', default='0')
     ap.add_argument('--far-table', metavar='FROM:TO')
     ap.add_argument('--seed', default='')
+    ap.add_argument('--symbol-seeds', metavar='END', help='every symbol below END (hex) is an entry too')
     ap.add_argument('--dis', metavar='ADDR')
     ap.add_argument('-n', type=int, default=20)
     ap.add_argument('--check', action='store_true', help='every reached instruction, against capstone')
@@ -748,11 +773,14 @@ def main(argv=None):
             buf = bytes(rnd.getrandbits(8) for _ in range(16))
             g, d, r, c = check_range(buf, 0, [0], md)
             agree += g; differ += d; refused.update(r); csr += c
-        print('%d agree, %d differ, %d refused by both, %d refused here and decoded by capstone'
-              % (agree, len(differ), csr, sum(refused.values())))
+        esc = sum(v for k, v in refused.items() if k.startswith('esc'))
+        print('%d agree, %d differ, %d refused by both, %d refused here and decoded by capstone, '
+              '%d escapes capstone has no x87 reading for' % (agree, len(differ), csr,
+                                                               sum(refused.values()) - esc, esc))
         kinds = collections.Counter()
         for kv in refused.items():
-            kinds[kv[0].split(' ')[0] if 'x87' not in kv[0] else 'x87'] += kv[1]
+            if not kv[0].startswith('esc'):
+                kinds[kv[0].split(' ')[0]] += kv[1]
         print('  refused here, by kind:', dict(kinds.most_common()))
         cats = collections.Counter(d.split(':')[0].split(' ')[0] for _, d in differ)
         print('  differ, by kind:', dict(cats))
@@ -773,6 +801,8 @@ def main(argv=None):
     else:
         e = expmod.Exp(data)
         image, base, entry = e.image, e.base_offset, e.eip
+        if a.symbol_seeds:
+            seeds += [off for off, _, _ in e.symbols if off < int(a.symbol_seeds, 16) and off != entry]
     if a.dis:
         p = int(a.dis, 16)
         for _ in range(a.n):
@@ -785,7 +815,7 @@ def main(argv=None):
             p += i.size
         return
     if a.check:
-        m = x86map.Map(image, base, entry, seeds)
+        m = x86map.Map(image, base, entry, seeds, None if a.raw or not e.symbols else e.table_end)
         agree, differ, refused, csr = check_range(image, base, sorted(m.insn))
         print('%d instructions reached: %d agree with capstone, %d differ, %d refused here'
               % (len(m.insn), agree, len(differ), sum(refused.values())))

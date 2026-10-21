@@ -160,7 +160,8 @@ def main(argv=None):
     for spec in a.exp:
         name, path, cs, _, seeds = parse(spec, False)
         e = expmod.Exp(open(path, 'rb').read())
-        prog = discover.Program(e.image, e.base_offset, [e.eip] + seeds, name)
+        prog = discover.Program(e.image, e.base_offset, [e.eip] + seeds, name,
+                                table_end=e.table_end if e.symbols else None)
         mods.append(Module(name, prog, cs, e.image, e.base_offset))
     for spec in a.raw:
         name, path, cs, far, seeds = parse(spec, True)

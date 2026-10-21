@@ -62,9 +62,11 @@ PORTS = {
     0x0000: 'PIC master, command/status', 0x0002: 'PIC master, mask',
     0x0010: 'PIC slave, command/status', 0x0012: 'PIC slave, mask',
     0x0020: 'system (0x20-0x33: reset, CPU and machine id)',
+    0x0024: 'system (0x24)', 0x0026: 'free-running microsecond counter (0x26-0x27, 16 bits)',
+    0x0028: 'NMI mask', 0x0030: 'machine id (0x30-0x31)', 0x0032: 'serial ROM',
     0x0040: 'PIT 0', 0x0042: 'PIT 0', 0x0044: 'PIT 0', 0x0046: 'PIT 0 control',
     0x0050: 'PIT 1', 0x0052: 'PIT 1', 0x0054: 'PIT 1', 0x0056: 'PIT 1 control',
-    0x0060: 'timer interrupt control', 0x0068: 'interval timer 2', 0x006C: 'system (0x6c)',
+    0x0060: 'timer interrupt control', 0x0068: 'interval timer 2', 0x006C: 'system (0x6c: a write waits 1 us)',
     0x0070: 'RTC data', 0x0080: 'RTC select',
     0x0200: 'FDC',
     0x0400: 'video: unknown (read)', 0x0404: 'video: VRAM access mode',
@@ -88,9 +90,13 @@ PORTS = {
     0x04F3: 'RF5C68 frequency high', 0x04F4: 'RF5C68 loop low', 0x04F5: 'RF5C68 loop high',
     0x04F6: 'RF5C68 start', 0x04F7: 'RF5C68 control', 0x04F8: 'RF5C68 channel on/off',
     0x05C8: 'video (0x5c8: TVRAM)', 0x05CA: 'video (0x5ca: VSYNC interrupt clear)',
-    0x05E8: 'system (0x5e8)',
+    0x05E8: 'system (0x5e8: RAM size in MB)',
+    0x05EC: 'system (0x5ec: bit 0 "compatibility mode" to MAME, a speed to programs; '
+            'bit 7 read set: not there)',
     0x0600: 'keyboard', 0x0602: 'keyboard', 0x0604: 'keyboard',
     0x0A00: 'serial',
+    0xFD90: 'palette index', 0xFD92: 'palette blue', 0xFD94: 'palette red', 0xFD96: 'palette green',
+    0xFD98: 'digital palette (0xfd98-0xfd9f)', 0xFDA0: 'video sub status (bit 0 VBLANK, bit 1 in the display)',
 }
 
 # IRQs per the driver. In protected mode under TownsOS the master PIC's
@@ -173,6 +179,8 @@ PHARLAP = {
 
 
 def port_name(p):
+    if 0x3000 <= p <= 0x4FFF:
+        return 'CMOS RAM (0x3000-0x4fff, even bytes)'
     return PORTS.get(p) or PORTS.get(p & ~1, '?')
 
 

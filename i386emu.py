@@ -312,6 +312,9 @@ class CPU:
     def op_nop(self, i, ops, n):
         pass
 
+    def op_esc(self, i, ops, n):
+        pass                        # an x87 escape on a 386 with no coprocessor (i386.py)
+
     def op_push(self, i, ops, n):
         o = ops[0]
         if o[0] == 's':
@@ -891,7 +894,7 @@ SET_ASIDE = {'int', 'int1', 'int3', 'into', 'iret', 'iretd', 'in', 'out', 'insb'
              'outsb', 'outsw', 'outsd', 'hlt', 'lcall', 'ljmp', 'retf', 'les', 'lds', 'lss', 'lfs',
              'lgs', 'arpl', 'sldt', 'str', 'lldt', 'ltr', 'verr', 'verw', 'sgdt', 'sidt', 'lgdt',
              'lidt', 'smsw', 'lmsw', 'lar', 'lsl', 'clts', 'wait', 'cli', 'sti', 'popf', 'popfd',
-             'bound', 'pause'}
+             'bound', 'pause', 'esc'}
 
 
 def set_aside(i):

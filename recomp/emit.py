@@ -87,6 +87,8 @@ def clocks(i):
         return 37
     if op in ('in', 'out'):
         return 12
+    if op == 'esc':
+        return 3                    # MAME's i386_escape
     return 6
 
 
@@ -287,7 +289,7 @@ class Emitter:
                 L.append('{ uint32_t t = %s; %s %s }' % (self.rd(i, x), self.wr(i, x, self.rd(i, y)),
                                                         self.wr(i, y, 't')))
             return L
-        if op in ('nop', 'wait', 'pause'):
+        if op in ('nop', 'wait', 'pause', 'esc'):     # esc: a 386 with no coprocessor
             return L
         if op == 'push':
             o = ops[0]

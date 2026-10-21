@@ -5,8 +5,9 @@ from the entries a port names: the program's entry, its interrupt handlers,
 function pointers it stores, a far-pointer table it exports. Function
 starts are call targets; jump tables (`jmp/call [index*4 + table]`) are
 read with the bound their `cmp`/`ja` gives, or while their entries hold
-(each 0 -- a hole -- or an address in the image that decodes); everything
-else indirect is listed for the runtime to meet.
+(each 0 -- a hole -- or an address in the image that decodes; with a
+program's symbols, not past the next one); everything else indirect is
+listed for the runtime to meet.
 
 A function's body is what its entry reaches by falling through and jumping,
 never by calling; bodies may share code (a jump into another function's
@@ -16,6 +17,7 @@ somewhere, and the report names both.
 
     python -m fmtownskit.recomp.discover GAME.EXP --seed 103e2 --report
     python -m fmtownskit.recomp.discover TBIOS.BIN --raw --far-table 20:100 --report
+    python -m fmtownskit.recomp.discover 4DDFMT.EXP --symbol-seeds 3a650 --report
 """
 import argparse
 import collections
@@ -28,8 +30,9 @@ ENDS = ('ret', 'retf', 'iret', 'iretd', 'hlt', 'ljmp')
 
 
 class Program:
-    def __init__(self, image, base=0, entries=(), name='prog', far_table=None):
+    def __init__(self, image, base=0, entries=(), name='prog', far_table=None, table_end=None):
         self.img, self.base, self.name = image, base, name
+        self.table_end = table_end     # a program's symbols: where a read table must stop
         self.insn = {}                 # addr -> Insn
         self.functions = set()
         self.targets = set()           # jump targets
@@ -137,10 +140,11 @@ class Program:
             return None
         bound = self._bound(pc, index)
         limit = self.cut.get(pc, 256) if bound is None else bound
+        end = self.table_end(disp) if self.table_end and bound is None else None
         out = []
         for k in range(limit):
             off = disp - self.base + 4 * k
-            if off + 4 > len(self.img):
+            if off + 4 > len(self.img) or (end is not None and disp + 4 * k >= end):
                 break
             v = int.from_bytes(self.img[off:off + 4], 'little')
             if bound is None and v:
@@ -234,13 +238,19 @@ class Program:
         return '\n'.join(lines)
 
 
-def load(path, raw=False, base=0, seeds=(), far_table=None, name=None):
+def load(path, raw=False, base=0, seeds=(), far_table=None, name=None, symbol_seeds=None):
+    """symbol_seeds: with a program's symbols, every symbol below this address (where its
+    code ends) is an entry too."""
     data = open(path, 'rb').read()
     if raw:
         return Program(data, base, seeds, name or path, far_table)
     from .. import exp
     e = exp.Exp(data)
-    return Program(e.image, e.base_offset, [e.eip] + list(seeds), name or path)
+    seeds = list(seeds)
+    if symbol_seeds is not None:
+        seeds += [off for off, _, _ in e.symbols if off < symbol_seeds and off != e.eip]
+    return Program(e.image, e.base_offset, [e.eip] + seeds, name or path,
+                   table_end=e.table_end if e.symbols else None)
 
 
 def main(argv=None):
@@ -250,11 +260,13 @@ def main(argv=None):
     ap.add_argument('--base', default='0')
     ap.add_argument('--far-table', metavar='FROM:TO')
     ap.add_argument('--seed', default='')
+    ap.add_argument('--symbol-seeds', metavar='END', help='every symbol below END (hex) is an entry too')
     ap.add_argument('--report', action='store_true')
     ap.add_argument('--functions', action='store_true')
     a = ap.parse_args(argv)
     ft = tuple(int(x, 16) for x in a.far_table.split(':')) if a.far_table else None
-    p = load(a.file, a.raw, int(a.base, 16), [int(x, 16) for x in a.seed.split(',') if x], ft)
+    p = load(a.file, a.raw, int(a.base, 16), [int(x, 16) for x in a.seed.split(',') if x], ft,
+             symbol_seeds=int(a.symbol_seeds, 16) if a.symbol_seeds else None)
     print(p.report())
     if a.functions:
         print(' '.join('%x' % f for f in sorted(p.functions)))

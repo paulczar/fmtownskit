@@ -43,6 +43,7 @@ the disc's TBIOS runs the Towns path, and needs no ROM.
 | Port | Game | What it asked of fmtownskit |
 |---|---|---|
 | pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS; the machine under them (`runtime/towns*`): memory and selectors as RUN386 leaves them, far calls into TBIOS, the program's interrupt handlers, VSYNC, the CRTC, palettes, VRAM and the sprite controller, the RF5C68's channels, DOS, Phar Lap and the CD BIOS over the disc image -- the logo, the opening and the title drawn as MAME draws them, pixel for pixel; the sound (`runtime/towns_sound.cpp`: the RF5C68, the YM3438 on ymfm, the CD's audio, mixed as MAME's speakers at its stream rates and resampling) held against MAME's WAV by replaying the oracle's sound log; the window and the Towns pad on SDL3 (`runtime/towns_sdl.*`, optional) |
+| pc-4ddriving | 4D Driving (1993, Electronic Arts Victor: *Stunts*; FM Towns Marty rerelease, Marty only) | a compiled program ten times the first's (MetaWare High C, 1,273 functions): the P3 **symbol table** Phar Lap's linker keeps (`exp`), its symbols as discovery's seeds, its sites' names and the bound of a jump table read with none (`x86map`, `recomp.discover`) -- a table of handlers filled at run time had been read on into the next variables; the P3 header's "extra" fields, bytes; the **x87's escapes** decoded and run as a 386 with no coprocessor runs them (`i386`, `i386emu`, `recomp.emit`), for MetaWare's FPU probe; the ports it reads (`towns`) |
 
 ## Using it
 
@@ -55,6 +56,8 @@ python -m fmtownskit.disc GAME.cue --list                 # every file
 python -m fmtownskit.disc GAME.cue --extract build/disc   # every file, and sectors 0-15
 python -m fmtownskit.disc GAME.cue --wav build/cdda       # each CD-DA track from INDEX 01
 python -m fmtownskit.exp build/disc/GAME.EXP              # the P3 header
+python -m fmtownskit.exp build/disc/GAME.EXP --symbols    # its symbol table, if it kept one
+python -m fmtownskit.recomp.discover GAME.EXP --symbol-seeds END --report   # every symbol below END a seed
 python -m fmtownskit.x86map build/disc/GAME.EXP           # code extents, system sites
 python -m fmtownskit.x86map build/disc/GAME.EXP --seed 103e2 --dis 103e2 -n 40
 python -m fmtownskit.towns                                # both machines' maps, the ports
@@ -111,10 +114,10 @@ one disc so far (see *Checks*):
 
 | Layer | Question it answers | Now | Next |
 |---|---|---|---|
-| 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3) | MZ executables and RUN386's own loader; TBIOS.BIN's modules as a format; floppy images (.hdm) for the discs that come with a user disk |
+| 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3, its symbol table) | MZ executables and RUN386's own loader; TBIOS.BIN's modules as a format; floppy images (.hdm) for the discs that come with a user disk |
 | 2. Extract | Turn standard formats into standard files | `disc --extract`, `disc --wav` | the TBIOS-level formats games share (sprite patterns, the sound BIOS's data), when a second game confirms them |
 | 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers), `mamedump` (a running machine: GDT, LDT, paging, bytes found) | the TBIOS's own functions named by module and AH |
-| 4. Translate | Turn 386 code into C++ | `i386` (the 386's integer instruction set exactly: 16- and 32-bit operand and address sizes, segment overrides, REP/LOCK, ModRM/SIB, the 0F map; later CPUs' instructions and the x87 refused with a reason), `i386emu` (an interpreter: the reference, its undefined flags listed), `recomp.discover` (functions and their bodies, jump tables bounded by the guard that really guards them -- or by `setcc`, `and` --, tables with no bound read until an entry's code conflicts or is refused, the descent rerun until clean), `recomp.emit` and `python -m fmtownskit.recomp` (C++ per function, a module per program keyed by its code selector, calls as C++ calls with the return checked and unwound, jump tables as switches on the entry read, the 386's clocks a block at a time), `recomp.selftest` (the interpreter records, the C++ replays; the optest: every instruction form, one-instruction functions) | flags only where read; the clocks held against the oracle |
+| 4. Translate | Turn 386 code into C++ | `i386` (the 386's integer instruction set exactly: 16- and 32-bit operand and address sizes, segment overrides, REP/LOCK, ModRM/SIB, the 0F map; later CPUs' instructions refused with a reason; the x87's escapes as a 386 with no coprocessor runs them), `i386emu` (an interpreter: the reference, its undefined flags listed), `recomp.discover` (functions and their bodies, jump tables bounded by the guard that really guards them -- or by `setcc`, `and` --, tables with no bound read until an entry's code conflicts or is refused, or to the next symbol, the descent rerun until clean; a program's symbols as seeds), `recomp.emit` and `python -m fmtownskit.recomp` (C++ per function, a module per program keyed by its code selector, calls as C++ calls with the return checked and unwound, jump tables as switches on the entry read, the 386's clocks a block at a time), `recomp.selftest` (the interpreter records, the C++ replays; the optest: every instruction form, one-instruction functions) | flags only where read; the clocks held against the oracle |
 | 5. Runtime | What an engine links | for recompiled code (C++20): `x86.h` (the CPU, linear memory as a table of 4 KB pages, the flags), `x86_flags` (shifts, multiply and divide, bits, BCD, strings, POPF, ENTER as `i386emu` does them), `x86_core` (modules, lookup by code selector), `x86_selftest`; the machine (`towns.h`, `towns.cmake`): `towns_mem` (linear memory as RUN386 leaves it, the descriptors, VRAM's mask and windows, the PCM wave RAM's bank, the font ROM; the state TownsOS hands over), `towns_cpu` (far calls and returns between a program and TBIOS, calls by code selector, `int`, interrupts taken at safe points), `towns_io` (the ports, level-triggered PICs, VSYNC and the beam, the microsecond counter, the sprite controller, the RF5C68's channels and its interrupt), `towns_video` (sprites drawn and the frame composed as MAME's `screen_update`, PNG), `towns_dos` (DOS and Phar Lap over the disc image, the CD BIOS's TOC, play and stop, RUN386's start of a P3 program), `towns_disc` (cue sheets, ISO 9660, audio sectors) | the YM3438 and the RF5C68 heard, the CD-DA played, a window and the pad; the Marty's speed and 2 MB for its oracle |
 
 ## Principles
@@ -136,22 +139,22 @@ one disc so far (see *Checks*):
 | Module | Checked by |
 |---|---|
 | `disc` | The Queen of Duellist (Rev A; Redump's split dump, 10 tracks): every track's file matches the CRC32 MAME's software list gives, and the CHD made from the sheet has its SHA-1. The data track: ISO 9660, 2,932 blocks of 6,750 sectors (the rest zero), 167 files in 4 directories, extracted byte for byte as a separate reader does; nine CD-DA tracks whose pregaps (345 to 815 sectors) hold audio in seven of them |
-| `exp` | the same disc's `DUEL.EXP`: a level-1 P3 image of 73,495 bytes at 0x200, entry 0xA7F0, stack top 0x13F20, no relocations |
+| `exp` | the same disc's `DUEL.EXP`: a level-1 P3 image of 73,495 bytes at 0x200, entry 0xA7F0, stack top 0x13F20, no relocations. 4D Driving's `4DDFMT.EXP`: 290,132 bytes, entry 0x340A4 (`_mwINIT`), and its SYM1 table read to the last byte of both sizes: 2 segments, 2,047 symbols. On both, image + the minimum "extra" = the initial ESP |
 | `towns` | the memory maps, ports, IRQs and machine ids as MAME's fmtowns driver has them; confirmed by a game's code: the pad ports 0x4D0/0x4D2/0x4D6, the CRTC's 0x440/0x442/0x443, the sprite controller's 0x450/0x452, the sound status at 0x4E9 and IRQ13 as int 4Dh (slave PIC at 0x48) |
 | `towns.SELECTORS`, `PAGES_MARTY` | the descriptor tables of MAME's `fmtowns` and `fmtmarty` running The Queen of Duellist, 20 seconds in: GDT and LDT the same base for base on both (the TBIOS's limit aside, 0x16FFF and 0x18FFF), paging on in both, the Towns' high pages 1:1, the Marty's at the seven mappings listed; the game's image at linear 0x200000 on both (physical 0x49000 and 0x47000), its code byte for byte the file's |
 | `mamedump` | the same two dumps: descriptors, the page walk, the image and the TBIOS found in RAM (the Towns' TBIOS the disc's `TBIOS.BIN` but for 265 bytes of data; the Marty's found in its ROM `MAR_EX1` at 0x19C00) |
-| `i386` | every instruction discovery reaches in `DUEL.EXP` (7,903) and `TBIOS.BIN` (16,120) against capstone, field by field: 0 differ. 300,000 random byte sequences: 281,740 agree, 11 differ and each is capstone's error (a 67h `jmp rel32` truncated to 16 bits, a REP or LOCK prefix dropped, the test registers TR6/TR7 unknown) |
+| `i386` | every instruction discovery reaches in `DUEL.EXP` (7,903), `TBIOS.BIN` (16,120) and `4DDFMT.EXP` (68,033 with its symbols as seeds, x87 escapes among them) against capstone, field by field: 0 differ. 300,000 random byte sequences: 290,438 agree, 11 differ and each is capstone's error (a 67h `jmp rel32` truncated to 16 bits, a REP or LOCK prefix dropped, the test registers TR6/TR7 unknown), 1,159 are escapes capstone has no x87 reading for |
 | `i386emu` | 10 known answers; against unicorn from random states, memory mapped on demand: 30,020 vectors over `DUEL.EXP`'s instructions, 46,545 over TBIOS's, 169,696 over random instructions -- 0 differ. Set aside: the machine's instructions, the flags Intel leaves undefined, and unicorn's own two errors (`ret imm16` sign-extended; F6/F7 /1, TEST's second encoding, refused) |
-| `recomp.discover` | `DUEL.EXP`: 157 functions, 0 conflicts. `TBIOS.BIN` from its far-pointer table: 355 functions, 14,385 instructions, 33 jump tables (11 bounded), 0 refusals, 0 conflicts -- where a first descent had 260 conflicts and 14 refusals from a table bounded by a comparison of a register rewritten before the jump |
-| `recomp.emit`, `recomp.selftest` | the optest: 7,464 one-instruction functions (every distinct instruction of both programs and of a random sweep), 22,340 vectors from `i386emu`, replayed on the C++: 0 failures. The programs' own functions, 3 random states each: `DUEL.EXP` 135 vectors, TBIOS 682, 0 failures. Every generated file compiles with clang |
+| `recomp.discover` | `DUEL.EXP`: 157 functions, 0 conflicts. `4DDFMT.EXP` with its 1,218 code symbols as seeds: 1,273 functions, 66,927 instructions, 25 jump tables (21 bounded), 0 refusals, 0 conflicts. `TBIOS.BIN` from its far-pointer table: 355 functions, 14,385 instructions, 33 jump tables (11 bounded), 0 refusals, 0 conflicts -- where a first descent had 260 conflicts and 14 refusals from a table bounded by a comparison of a register rewritten before the jump |
+| `recomp.emit`, `recomp.selftest` | the optest: 7,464 one-instruction functions (every distinct instruction of both programs and of a random sweep), 22,340 vectors from `i386emu`, replayed on the C++: 0 failures. The programs' own functions, 3 random states each: `DUEL.EXP` 135 vectors, TBIOS 682, 0 failures. Every generated file compiles with clang. With the x87's escapes: 7,652 functions, 22,909 vectors, 0 failures; the first game's and TBIOS's C++ unchanged byte for byte |
 | `runtime/towns*` | The Queen of Duellist run from its first instruction, the state at that instruction read on MAME's `fmtowns` (registers, RAM, the PICs' save items, the CRTC, video registers and palettes through the ports): memory blocks, selectors and bases as RUN386 gave them; TBIOS set up by the game's own calls; the logo, its fades, the opening and the title screen with its menu (the font ROM's text) the same as MAME's snapshots pixel for pixel, at every moment tried; the attract fight run, its sprites, HUD and backgrounds drawn |
-| `x86map` | `DUEL.EXP`: 154 functions from the entry (157 with three seeds), 27,124 bytes of code in 0xA7F0-0x11B98, every site named (33 `int`, 18 `out`, 6 `in`, 9 far calls into TBIOS, 48 selector loads -- of 0x14, 0x104, 0x110 and 0x130 only, a 32-bit register's low half included), 12 indirect transfers listed |
+| `x86map` | `4DDFMT.EXP`: 724 functions from the entry, 1,276 with its symbols, each site named by its function. `DUEL.EXP`: 154 functions from the entry (157 with three seeds), 27,124 bytes of code in 0xA7F0-0x11B98, every site named (33 `int`, 18 `out`, 6 `in`, 9 far calls into TBIOS, 48 selector loads -- of 0x14, 0x104, 0x110 and 0x130 only, a 32-bit register's low half included), 12 indirect transfers listed |
 
 ## Known gaps
 
-* **One disc.** Everything above is what one game shows; the next will add
-  to it, and some of what is written here as the Towns' way may turn out to
-  be that game's.
+* **Two discs.** Everything above is what two games show, and the second
+  (4D Driving) has so far been read, not run: the runtime is still the
+  first game's machine, the Towns'; the Marty as a runtime machine is next.
 * **RUN386's selectors** are read from two machines running, not from
   RUN386's own code; the blocks `int 21h AH=48h` hands out (LDT 0x44 up)
   are placed by it as the dumps show, not yet by a rule.
@@ -171,9 +174,15 @@ one disc so far (see *Checks*):
   the oracle.
 * **Self-modifying code** is not met (the first game's code is the file's,
   byte for byte, in RAM): the recompiled code would not see it.
-* **The P3 header** past the image fields (the extra pages, the run-time
-  parameters) is read but not yet understood: the first disc's says
-  0x2009 extra pages minimum and maximum.
+* **The P3 header's run-time parameters** ("DX" first) are read but not
+  yet understood. Its "extra" fields are bytes past the image (both discs:
+  image + minimum = ESP), and a maximum of 0xFFFFFFFF gets all the memory
+  there is (0x169FFF of segment on MAME's Towns, 0x184FFF on the Marty).
+* **The x87** is not emulated: the machines MAME has have no coprocessor,
+  and an escape does nothing, as there. A program that needs a 387 would
+  need more.
+* **`i386emu --check` on a large program** holds unicorn's memory: 55,000
+  instructions with two states each reached 8 GB. Check in slices.
 
 ## Licence
 

@@ -18,6 +18,10 @@ Needs capstone.
     python -m fmtownskit.x86map DUEL.EXP                    # sites, extents, functions
     python -m fmtownskit.x86map DUEL.EXP --seed 10489,104e8 # more entries
     python -m fmtownskit.x86map DUEL.EXP --dis a7f0 -n 40   # disassembly
+    python -m fmtownskit.x86map 4DDFMT.EXP --symbol-seeds 3a650  # its symbols below 0x3A650 too
+
+A program with symbols (`exp`) has each site named by the symbol it lies in,
+and its tables read with no bound stop at the next symbol.
 """
 import argparse
 import collections
@@ -75,7 +79,9 @@ class Consts:
 
 
 class Map:
-    def __init__(self, image, base, entry, seeds=()):
+    def __init__(self, image, base, entry, seeds=(), table_end=None):
+        """table_end: a function giving where a table read with no bound must stop (a
+        program's symbols: `exp.Exp.table_end`), or None."""
         if capstone is None:
             raise SystemExit('x86map needs capstone')
         self.img = image
@@ -88,6 +94,7 @@ class Map:
         self.indirect = []
         self.tables = []                   # (site, table address, entries, bounded)
         self.bad = []
+        self.table_end = table_end
         self._descend([entry] + list(seeds))
         self.sites = self._sites()
 
@@ -145,7 +152,8 @@ class Map:
 
         The bound is the `cmp index8/index, N` and `ja` just before (N+1
         entries). With none, entries are read while each is 0 (a hole) or an
-        address inside the image that decodes, up to 256."""
+        address inside the image that decodes, up to 256 -- and, when the
+        program has symbols, not past the next symbol (`table_end`)."""
         if not ins.operands or ins.operands[0].type != X.X86_OP_MEM:
             return None
         mem = ins.operands[0].mem
@@ -172,9 +180,10 @@ class Map:
                     continue
                 bound = n + 1 if q.mnemonic == 'ja' else n
         out = []
+        end = self.table_end(tbl) if self.table_end and bound is None else None
         for k in range(bound if bound is not None else 256):
             off = tbl - self.base + 4 * k
-            if off + 4 > len(self.img):
+            if off + 4 > len(self.img) or (end is not None and tbl + 4 * k >= end):
                 break
             v = int.from_bytes(self.img[off:off + 4], 'little')
             if bound is None and v != 0 and (not 0 <= v - self.base < len(self.img) or self._at(v) is None):
@@ -294,6 +303,21 @@ def name_site(s):
     return str(s)
 
 
+def symbol_at(e):
+    """A function naming the symbol an address lies in, as '[name+off] '."""
+    import bisect
+    names = e.names()
+    starts = sorted(names)
+
+    def where(a):
+        k = bisect.bisect_right(starts, a) - 1
+        if k < 0:
+            return ''
+        d = a - starts[k]
+        return '[%s%s] ' % (names[starts[k]].split(',')[0], '+%x' % d if d else '')
+    return where
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('file', help='a P3 .EXP, or with --raw any flat image')
@@ -302,6 +326,9 @@ def main(argv=None):
     ap.add_argument('--far-table', metavar='FROM:TO',
                     help='with --raw: seed every far pointer (offset, selector) stored in FROM-TO, hex')
     ap.add_argument('--seed', default='', help='more entries, hex, comma-separated')
+    ap.add_argument('--symbol-seeds', metavar='END',
+                    help="a program with symbols: every symbol below END (hex: where its code ends) "
+                         "is an entry too")
     ap.add_argument('--dis', metavar='ADDR')
     ap.add_argument('-n', type=int, default=30)
     ap.add_argument('--functions', action='store_true')
@@ -309,6 +336,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     data = open(a.file, 'rb').read()
     seeds = [int(x, 16) for x in a.seed.split(',') if x]
+    e = None
     if a.raw:
         image, base = data, int(a.base, 16)
         if a.far_table:
@@ -323,6 +351,9 @@ def main(argv=None):
     else:
         e = expmod.Exp(data)
         image, base, entry = e.image, e.base_offset, e.eip
+        if a.symbol_seeds:
+            end = int(a.symbol_seeds, 16)
+            seeds += [off for off, _, _ in e.symbols if off < end and off != entry]
     if a.dis:
         md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         addr = int(a.dis, 16)
@@ -331,7 +362,8 @@ def main(argv=None):
                 break
             print('  %06x  %-22s %s %s' % (ins.address, ins.bytes.hex(), ins.mnemonic, ins.op_str))
         return
-    m = Map(image, base, entry, seeds)
+    m = Map(image, base, entry, seeds, e.table_end if e is not None and e.symbols else None)
+    where = (lambda a: '') if e is None or not e.symbols else symbol_at(e)
     ext = m.extents()
     code = sum(i.size for i in m.insn.values())
     print('%d functions, %d instructions, %d bytes of code in %d extents (%#x-%#x), image %d bytes'
@@ -349,11 +381,11 @@ def main(argv=None):
     kinds = collections.Counter()
     for s in m.sites:
         kinds[s[1]] += 1
-        print('  %06x  %s' % (s[0], name_site(s)))
+        print('  %06x  %s%s' % (s[0], where(s[0]), name_site(s)))
     print('indirect transfers (not followed): %d' % len(m.indirect))
     for p in m.indirect:
         ins = m.insn[p]
-        print('  %06x  %s %s' % (p, ins.mnemonic, ins.op_str))
+        print('  %06x  %s%s %s' % (p, where(p), ins.mnemonic, ins.op_str))
     print(', '.join('%s %d' % kv for kv in sorted(kinds.items())))
 
 
