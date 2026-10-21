@@ -42,7 +42,7 @@ the disc's TBIOS runs the Towns path, and needs no ROM.
 
 | Port | Game | What it asked of fmtownskit |
 |---|---|---|
-| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS; the machine under them (`runtime/towns*`): memory and selectors as RUN386 leaves them, far calls into TBIOS, the program's interrupt handlers, VSYNC, the CRTC, palettes, VRAM and the sprite controller, the RF5C68's channels, DOS, Phar Lap and the CD BIOS over the disc image -- the logo, the opening and the title drawn as MAME draws them, pixel for pixel |
+| pc-thequeenofduellist | The Queen of Duellist (1993, Agumix; FM Towns CD, Rev A, runs on the Marty) | where the kit was born: the cue sheet with one file per track and audio in the pregaps, ISO 9660 and the IPL record (`disc`), the Phar Lap P3 executable (`exp`), both machines' memory maps, ports, IRQs and machine ids (`towns`), and the map of a program's system surface -- DOS and Phar Lap calls, the CD BIOS, ports, selectors, far calls into TBIOS (`x86map`); RUN386's selectors and paging read on both machines running (`mamedump`); the 386 decoder, the interpreter, discovery with its jump tables, the emitter, the runtime's CPU and the self-test (`i386`, `i386emu`, `recomp`, `runtime/x86*`), on the game and on TBIOS; the machine under them (`runtime/towns*`): memory and selectors as RUN386 leaves them, far calls into TBIOS, the program's interrupt handlers, VSYNC, the CRTC, palettes, VRAM and the sprite controller, the RF5C68's channels, DOS, Phar Lap and the CD BIOS over the disc image -- the logo, the opening and the title drawn as MAME draws them, pixel for pixel; the sound (`runtime/towns_sound.cpp`: the RF5C68, the YM3438 on ymfm, the CD's audio, mixed as MAME's speakers at its stream rates and resampling) held against MAME's WAV by replaying the oracle's sound log; the window and the Towns pad on SDL3 (`runtime/towns_sdl.*`, optional) |
 
 ## Using it
 
@@ -174,3 +174,9 @@ one disc so far (see *Checks*):
 * **The P3 header** past the image fields (the extra pages, the run-time
   parameters) is read but not yet understood: the first disc's says
   0x2009 extra pages minimum and maximum.
+
+## Licence
+
+MIT (`LICENSE`), but for `runtime/ymfm/`: ymfm by Aaron Giles, BSD 3-Clause
+(its `LICENSE` beside it), the files a YM3438 needs, unchanged from MAME's
+`3rdparty/ymfm`. The window links SDL3 (zlib licence) when a port builds it.

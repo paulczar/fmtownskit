@@ -4,8 +4,8 @@
 // fmtowns_v.cpp), the devices kept as registers where nothing yet hangs on them. Time is the
 // CPU's clocks at 16 MHz: VSYNC every 1/60 s (IRQ11), the vertical blank 2.5 ms long (MAME's
 // figure), the sprite controller's drawing after its VSYNC, the free-running microsecond
-// counter at 0x26, the RF5C68's channels stepping at its 20,833 Hz (its IRQ13 when a channel
-// reaches the last byte of a 4 KB block, as MAME's end callback).
+// counter at 0x26, and the sound's own events (towns_sound.cpp: the RF5C68's samples, the
+// YM3438's timers), which also answers the sound's ports.
 #include "towns.h"
 #include <algorithm>
 #include <cstring>
@@ -87,52 +87,11 @@ void Machine::beam(int& hpos, int& vpos) const {
 }
 
 // ---- time ------------------------------------------------------------------------------------
-static constexpr uint32_t kPcmClocks = 768;     // 16 MHz / (8 MHz / 384)
-
-struct PcmChannel { uint8_t env = 0, pan = 0, start = 0; uint16_t step = 0, loopst = 0; uint32_t addr = 0; bool on = false; };
-static PcmChannel g_pcm[8];
-static uint8_t g_pcm_cbank;
-static uint64_t g_pcm_next = kPcmClocks;
-static std::vector<int16_t> g_pcm_out;
-
-static void pcm_sample(Machine& m) {
-    Sound& s = m.sound;
-    int left = 0, right = 0;
-    bool enable = s.pcm_ctrl & 0x80;
-    for (int ch = 0; ch < 8 && enable; ++ch) {
-        PcmChannel& c = g_pcm[ch];
-        if (!c.on) continue;
-        if (((c.addr >> 11) & 0xFFF) == 0xFFF) {
-            int bank = (int)((c.addr >> 11) / 0x2000);
-            if (s.pcm_mask & (1 << bank)) {
-                s.pcm_flags |= (uint8_t)(1 << bank);
-                m.raise_irq(13, true);
-            }
-        }
-        int sample = s.wave[(c.addr >> 11) & 0xFFFF];
-        if (sample == 0xFF) {
-            c.addr = (uint32_t)c.loopst << 11;
-            sample = s.wave[(c.addr >> 11) & 0xFFFF];
-            if (sample == 0xFF) continue;
-        }
-        c.addr += c.step;
-        int lv = (c.pan & 0x0F) * c.env, rv = ((c.pan >> 4) & 0x0F) * c.env;
-        if (sample & 0x80) { left += ((sample & 0x7F) * lv) >> 5; right += ((sample & 0x7F) * rv) >> 5; }
-        else { left -= (sample * lv) >> 5; right -= (sample * rv) >> 5; }
-    }
-    left = std::clamp(left, -32768, 32767) & ~63;
-    right = std::clamp(right, -32768, 32767) & ~63;
-    g_pcm_out.push_back((int16_t)left);
-    g_pcm_out.push_back((int16_t)right);
-}
-
-void pcm_take(std::vector<int16_t>& out) { out.swap(g_pcm_out); g_pcm_out.clear(); }
-
 uint64_t Machine::next_event() const {
     uint64_t t = next_vsync;
     if (vblank) t = std::min(t, vblank_end);
     if (sprite.busy) t = std::min(t, sprite.done_at);
-    t = std::min(t, g_pcm_next);
+    t = std::min(t, sound_next_event());
     return t;
 }
 
@@ -148,10 +107,7 @@ void Machine::advance(uint64_t to) {
             vblank = false;
             raise_irq(11, false);
         }
-        while (g_pcm_next <= now) {             // the RF5C68's samples, silent while it is off
-            pcm_sample(*this);
-            g_pcm_next += kPcmClocks;
-        }
+        sound_run(now);                         // the RF5C68's samples, the YM3438's timers
         if (now >= next_vsync) {
             ++frame;
             vblank = true;
@@ -169,6 +125,15 @@ void Machine::advance(uint64_t to) {
             if (on_vsync) on_vsync(*this);
         }
     }
+}
+
+// ---- the pad ---------------------------------------------------------------------------------
+void Machine::set_pad(int port, unsigned held) {
+    uint8_t v = 0x7F;                       // bit 6 unused (high), bit 7 read as 0
+    v &= (uint8_t)~(held & 0x3F);
+    if (held & kPadRun) v &= ~0x0C;         // RUN: left and right at once
+    if (held & kPadSelect) v &= ~0x03;      // SELECT: up and down at once
+    pad[port & 1] = v;
 }
 
 // ---- the ports -------------------------------------------------------------------------------
@@ -239,19 +204,10 @@ uint8_t Machine::in8(uint32_t port) {
                               | (((pad_mask >> (p + 4)) & 1) << 6));
         return pad[p] & (0x0F | m);
     }
-    case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE: return 0;    // the YM3438: never busy, no timer
-    case 0x4E0: case 0x4E1: return 0;
-    case 0x4E2: return sound.volume[sound.volume_sel & 3];
-    case 0x4E3: return sound.volume_sel;
-    case 0x4E8: return 1;
-    case 0x4E9: return (sound.pcm_flags ? 0x08 : 0);
-    case 0x4EA: return sound.pcm_mask;
-    case 0x4EB: {
-        uint8_t r = sound.pcm_flags;
-        sound.pcm_flags = 0;
-        raise_irq(13, false);
-        return r;
-    }
+    case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
+    case 0x4E0: case 0x4E1: case 0x4E2: case 0x4E3:
+    case 0x4E8: case 0x4E9: case 0x4EA: case 0x4EB:
+        return sound_in8(port);
     case 0x5C8: return 0;
     case 0x5E8: return 2;           // MB of RAM (MAME's fmtowns: 2)
     case 0x5EC: return 0;
@@ -311,40 +267,10 @@ void Machine::out8(uint32_t port, uint8_t d) {
     case 0x45A: case 0x45B: v.mask[((v.mask_sel & 1) << 1) + (port - 0x45A)] = d; vram_pages(); return;
     case 0x480: return;
     case 0x4D6: pad_mask = d; return;
-    case 0x4D8: sound.opn_addr[0] = d; return;
-    case 0x4DA: sound.opn[0][sound.opn_addr[0]] = d; return;
-    case 0x4DC: sound.opn_addr[1] = d; return;
-    case 0x4DE: sound.opn[1][sound.opn_addr[1]] = d; return;
-    case 0x4E0: case 0x4E1: return;
-    case 0x4E2: sound.volume[sound.volume_sel & 3] = d; return;
-    case 0x4E3: sound.volume_sel = d; return;
-    case 0x4EA: sound.pcm_mask = d; return;
-    case 0x4EC: return;             // LED, mute
-    case 0x4F0: case 0x4F1: case 0x4F2: case 0x4F3: case 0x4F4: case 0x4F5: case 0x4F6: {
-        PcmChannel& c = g_pcm[g_pcm_cbank];
-        switch (port - 0x4F0) {
-        case 0: c.env = d; break;
-        case 1: c.pan = d; break;
-        case 2: c.step = (uint16_t)((c.step & 0xFF00) | d); break;
-        case 3: c.step = (uint16_t)((c.step & 0x00FF) | (d << 8)); break;
-        case 4: c.loopst = (uint16_t)((c.loopst & 0xFF00) | d); break;
-        case 5: c.loopst = (uint16_t)((c.loopst & 0x00FF) | (d << 8)); break;
-        case 6: c.start = d; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
-        }
-        sound.pcm_reg[port - 0x4F0] = d;
-        return;
-    }
-    case 0x4F7:
-        if (d & 0x40) g_pcm_cbank = d & 7;
-        // the wave RAM window's bank: kept in pcm_ctrl's low bits only when MOD is 0
-        sound.pcm_ctrl = (uint8_t)((d & 0x80) | (d & 0x40 ? (sound.pcm_ctrl & 0x0F) : (d & 0x0F)));
-        return;
-    case 0x4F8:
-        sound.pcm_onoff = d;
-        for (int i = 0; i < 8; ++i) {
-            g_pcm[i].on = !((d >> i) & 1);
-            if (!g_pcm[i].on) g_pcm[i].addr = (uint32_t)g_pcm[i].start << (8 + 11);
-        }
+    case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
+    case 0x4E0: case 0x4E1: case 0x4E2: case 0x4E3: case 0x4EA: case 0x4EC:
+    case 0x4F0: case 0x4F1: case 0x4F2: case 0x4F3: case 0x4F4: case 0x4F5: case 0x4F6: case 0x4F7: case 0x4F8:
+        sound_out8(port, d);
         return;
     case 0x5CA: raise_irq(11, false); return;
     case 0x5E8: case 0x5EC: return;

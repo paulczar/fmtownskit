@@ -53,7 +53,10 @@ struct Spr {
                     else voffset -= rot ? linesize : 2;
                     pixel = tv[poffset] & 0x0F;
                     col = (uint16_t)((tv[(coffset + pixel * 2) & 0x1FFFF] | (tv[(coffset + pixel * 2 + 1) & 0x1FFFF] << 8)) & 0x7FFF);
-                    if (pixel) put(voffset, col, xpos, ypos);
+                    // the byte's second pixel, clipped at its own x: MAME clips it at the first's,
+                    // so a mirrored sprite's pixel at x 256 lands at the next line's x 0 (a
+                    // column of the sprite at the left edge; session 4, the CPU pushed out right)
+                    if (pixel) put(voffset, col, (uint16_t)(xflip ? xpos + 1 : xpos - 1), ypos);
                 }
                 poffset = (poffset + 1) & 0x1FFFF;
             }

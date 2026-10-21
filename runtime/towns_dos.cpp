@@ -236,14 +236,14 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t rm_ds, uint
     case 0x50: {                                    // play from [0..2] to [3..5]
         uint8_t p[6];
         read_block(buf, p, 6);
-        cd.from = from_msf(p); cd.to = from_msf(p + 3);
+        cd_play(from_msf(p), from_msf(p + 3));
         cd.repeat = c.r[1] & 0xFF;
-        cd.playing = true;
-        if (trace_int) std::fprintf(stderr, "  CD-DA %u to %u\n", cd.from, cd.to);
+        if (trace_int) std::fprintf(stderr, "  CD-DA %u to %u (frame %llu)\n", cd.from, cd.to, (unsigned long long)frame);
         return;
     }
     case 0x52:                                      // stop
-        cd.playing = false;
+        cd_stop();
+        if (trace_int) std::fprintf(stderr, "  CD-DA stop (frame %llu)\n", (unsigned long long)frame);
         return;
     case 0x54: {                                    // the table of contents
         const auto& t = disc.tracks();

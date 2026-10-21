@@ -31,6 +31,7 @@ Machine::Machine() {
     std::memset(g_x86_page, 0, sizeof g_x86_page);
     vram_pages();
     for (uint32_t a = 0; a < 0x20000; a += 0x1000) g_x86_page[(0x81000000u + a) >> 12] = &sprram[a];
+    sound_start();
     townsos();
 }
 

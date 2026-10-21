@@ -82,16 +82,29 @@ struct Video {
     bool dpmd = false;
 };
 
-struct Sound {                    // registers only, so far
-    uint8_t opn_addr[2] = {}, opn[2][256] = {};
-    uint8_t pcm_reg[16] = {}, pcm_ctrl = 0, pcm_onoff = 0xFF, pcm_mask = 0, pcm_flags = 0;
-    uint8_t volume[4] = {}, volume_sel = 0;
-    std::vector<uint8_t> wave = std::vector<uint8_t>(65536);
+// The sound's registers as the ports show them; the chips themselves are towns_sound.cpp's.
+struct Sound {
+    uint8_t pcm_ctrl = 0, pcm_onoff = 0xFF, pcm_mask = 0, pcm_flags = 0;   // 0x4F7, 0x4F8, 0x4EA, 0x4EB
+    bool pcm_irq = false, fm_irq = false;   // the two halves of IRQ13 (0x4E9 bits 3 and 0)
+    uint8_t volume[4] = {}, volume_sel = 0; // the output volumes (0x4E2/0x4E3)
+    uint8_t in_volume[4] = {}, in_sel = 0;  // the input volumes (0x4E0/0x4E1): kept, not heard
+    float cd_gain[2] = {1, 1};              // the CD's audio, left and right, as the volumes set it
+    std::vector<uint8_t> wave = std::vector<uint8_t>(65536);  // the RF5C68's wave RAM
 };
 
-struct CdState { bool playing = false; uint32_t from = 0, to = 0; uint8_t repeat = 0; };
+// The CD's audio: a play from a sector to a sector (both included, as MAME's CD plays them).
+struct CdState { bool playing = false, ended = false; uint32_t from = 0, to = 0, lba = 0, left = 0;
+                 uint8_t repeat = 0; };
+
+constexpr int kAudioRate = 48000;   // the mix's rate (MAME's -samplerate default: the oracle's WAV)
+
+struct SoundChips;                  // towns_sound.cpp
+struct SoundChipsFree { void operator()(SoundChips*) const; };
 
 struct IntVector { uint16_t sel = 0; uint32_t off = 0; bool set = false; };
+
+enum : unsigned { kPadUp = 1, kPadDown = 2, kPadLeft = 4, kPadRight = 8, kPadA = 16, kPadB = 32,
+                  kPadRun = 64, kPadSelect = 128 };
 
 // A service the runtime does not have: logged once per kind, and counted.
 void unknown(const char* fmt, ...);
@@ -140,10 +153,26 @@ public:
     Sprite sprite;
     Sound sound;
     CdState cd;
+    // the sound (towns_sound.cpp): the RF5C68, the YM3438 (ymfm's), the CD's audio, their mix
+    std::unique_ptr<SoundChips, SoundChipsFree> chips;
+    void sound_start();
+    uint8_t sound_in8(uint32_t port);
+    void sound_out8(uint32_t port, uint8_t d);
+    uint64_t sound_next_event() const;
+    void sound_run(uint64_t to);        // the chips' events due by `to`
+    void sound_irq();                   // IRQ13 from the FM's and the PCM's flags
+    void cd_play(uint32_t from, uint32_t to);
+    void cd_stop();
+    // the mix since the last take: kAudioRate stereo frames, up to about `now`
+    void audio_take(std::vector<int16_t>& out);
+    uint8_t audio_mute = 0;             // sources left out of the mix: 1 the FM, 2 the PCM, 4 the CD
     std::vector<uint8_t> vram = std::vector<uint8_t>(0x80000);
     std::vector<uint8_t> sprram = std::vector<uint8_t>(0x20000);
     uint8_t pad_mask = 0;
     uint8_t pad[2] = {0x7F, 0x7F};      // active low: bits 0-3 up down left right, 4 A, 5 B
+    // the Towns pad as the player holds it (kPad* bits): Run and Select are wired as left with
+    // right and up with down, as MAME's townspad has them
+    void set_pad(int port, unsigned held);
     void vram_pages();                  // map VRAM's pages as host memory, or not (write mask)
     void draw_sprites();
     // the frame as MAME's screen_update draws it: width x height of 0xRRGGBB
@@ -177,7 +206,6 @@ public:
 extern Machine* g_towns;
 
 struct Stop { int code; };          // thrown to end a run: the program's exit, or the host's
-void pcm_take(std::vector<int16_t>& out);   // the RF5C68's stereo samples since the last take
 
 // RUN386's load of a P3 program: the image at linear `base` under code `cs` and data `cs + 8`,
 // the stack, the registers as RUN386 hands them over (read on the Towns at the first
@@ -189,5 +217,24 @@ void boot_run386(Machine& m, X86Cpu& c, const P3& p, const std::vector<uint8_t>&
 
 // PNG, 8-bit RGB, no compression
 bool write_png(const std::string& path, const std::vector<uint32_t>& rgb, int w, int h);
+
+// A 16-bit stereo WAV at kAudioRate, written as it grows (its header patched at close).
+class WavWriter {
+public:
+    bool open(const std::string& path);
+    void write(const std::vector<int16_t>& lr);
+    void close();
+    ~WavWriter() { close(); }
+private:
+    FILE* f_ = nullptr;
+    uint32_t bytes_ = 0;
+};
+
+// The oracle's sound without the game: a sound log (a port's oracle writes it: every write to
+// ports 0x4C0-0x4FF as "MICROSECONDS OFFSET DATA MASK", every write to the wave RAM as
+// "MICROSECONDS m ADDRESS DATA MASK", timed from power-on) played into a fresh machine's chips at
+// its times, the CD controller's play (0x04, the MSFs in its parameters, 1 ms later) and stop
+// (0x84, 0x85) as MAME's driver takes them, the mix written from power-on for `seconds`.
+bool replay_sound_log(Machine& m, const std::string& log, double seconds, WavWriter& wav, std::string& err);
 
 }  // namespace towns
