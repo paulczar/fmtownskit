@@ -172,13 +172,24 @@ class Map:
         for p in back:
             if p.mnemonic == 'movzx' and p.op_str.split(',')[0] == idx:
                 names.add(p.op_str.split(', ')[1])
-        for p, q in zip(back, back[1:]):
-            if p.mnemonic == 'cmp' and q.mnemonic in ('ja', 'jae') and p.op_str.split(', ')[0] in names:
+        def rewrites(p):
+            # the index changed after its compare (`sub ebx, 0x80; shr ebx, 4`: ABEL.EXE's 0x474CC
+            # compares AL with 0xF0, then indexes by (AL - 0x80) >> 4): the compare bounds no more
+            if p.mnemonic == 'movzx' and p.op_str.split(',')[0] == idx or p.mnemonic == 'cwde':
+                return False       # a widening keeps the value compared (`cmp ax, 0x4A; ja; cwde`)
+            try:
+                _, written = p.regs_access()
+            except capstone.CsError:
+                return True
+            return any(p.reg_name(r) in names for r in written)
+        for k, (p, q) in enumerate(zip(back, back[1:])):
+            if p.mnemonic == 'cmp' and q.mnemonic in ('ja', 'jae', 'jg', 'jge') and p.op_str.split(', ')[0] in names:
                 try:
                     n = int(p.op_str.split(', ')[1], 0)
                 except ValueError:
                     continue
-                bound = n + 1 if q.mnemonic == 'ja' else n
+                bound = None if any(rewrites(r) for r in back[k + 2:]) else \
+                    (n + 1 if q.mnemonic in ('ja', 'jg') else n)
         out = []
         end = self.table_end(tbl) if self.table_end and bound is None else None
         for k in range(bound if bound is not None else 256):
@@ -214,9 +225,14 @@ class Map:
                 if m == 'in':
                     c.set(reg(ops[0]), None)
             elif m in ('call', 'lcall', 'jmp', 'ljmp') and ops and ops[0].type == X.X86_OP_MEM \
+                    and ins.opcode[0] == 0xFF and (ins.modrm >> 3) & 7 in (3, 5) \
                     and ins.reg_name(ops[0].mem.segment) in SEG and ops[0].mem.base == 0:
+                # a far transfer through a pointer (FF /3, FF /5: capstone's operand size is not
+                # reliable for them); a near `jmp cs:[reg*4 + table]` (FF /4, MetaWare's switch
+                # with its table placed after it) is not one
                 sr = ins.reg_name(ops[0].mem.segment)
-                out.append((a, 'far', ops[0].mem.disp, sr, c.get(sr), c.get('ah')))
+                out.append((a, 'far' if m in ('call', 'lcall') else 'farjmp', ops[0].mem.disp, sr,
+                            c.get(sr), c.get('ah')))
                 c.clear()
             elif m == 'mov' and len(ops) == 2 and ops[0].type == X.X86_OP_REG:
                 dst = reg(ops[0])
@@ -295,9 +311,9 @@ def name_site(s):
     if kind in ('in', 'out'):
         return '%-3s %s  %s' % (kind, '?' if n is None else '0x%04x' % n,
                                 '' if n is None else towns.port_name(n))
-    if kind == 'far':
-        return 'call far %s:[%#x], %s=%s AH=%s  %s' % (x, n, x, h(y, 4), h(z),
-                                                     towns.SELECTORS.get(y, '') if y is not None else '')
+    if kind in ('far', 'farjmp'):
+        return '%s far %s:[%#x], %s=%s AH=%s  %s' % ('call' if kind == 'far' else 'jmp', x, n, x, h(y, 4), h(z),
+                                                   towns.SELECTORS.get(y, '') if y is not None else '')
     if kind == 'sel':
         return '%s <- %04Xh  %s' % (x, n, towns.SELECTORS.get(n, ''))
     return str(s)

@@ -191,7 +191,7 @@ class Program:
     def _bound(self, pc, index):
         """How many entries a table indexed by register `index` at `pc` can be asked for, from
         the straight run of code before it, or None. Walking back: the `cmp idx, N` and `ja`
-        that guard it (with no write to idx in between), `and idx, N`, a `setcc` into its low
+        (or a signed `jg`) that guard it (with no write to idx in between), `and idx, N`, a `setcc` into its low
         byte; a `movzx idx, r8` moves the question to that register."""
         run, a = [], pc
         while True:            # the contiguous instructions ending just before pc
@@ -206,12 +206,14 @@ class Program:
             o0 = q.ops[0] if q.ops else None
             writes = o0 is not None and o0[0] == 'r' and (o0[1] if o0[2] != 1 else o0[1] & 3) == fam \
                 and q.op not in ('cmp', 'test', 'push', 'bt') and not q.op.startswith('j')
-            if q.op in ('ja', 'jae') and j + 1 < len(run):
+            if q.op in ('ja', 'jae', 'jg', 'jge') and j + 1 < len(run):
                 c = run[j + 1]
                 if c.op == 'cmp' and c.ops[0][0] == 'r' and c.ops[1][0] == 'i' and \
                         (c.ops[0][1] if c.ops[0][2] != 1 else c.ops[0][1] & 3) == fam:
+                    # a signed `jg` bounds the entries from 0 up as `ja` does (ABEL.EXE's 0xCB2D:
+                    # `jle` past index 0 and below, `cmp esi, 0x14; jg`: 21 entries)
                     n = c.ops[1][1]
-                    return n + 1 if q.op == 'ja' else n
+                    return n + 1 if q.op in ('ja', 'jg') else n
             if not writes:
                 continue
             if q.op.startswith('set'):

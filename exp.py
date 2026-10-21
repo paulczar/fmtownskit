@@ -41,6 +41,13 @@ header, short of the file's end by the segments and symbols: a file is taken
 when the table's offset and size reach its end exactly, and both lists are
 read to their sizes' last byte.
 
+**Bound to a DOS stub.** A P3 can be carried behind a real-mode MZ program
+that starts the extender on its own file, so that the game is run as an .EXE
+(read on ABEL's three programs: Fujitsu's "exp2exe" stub, 0x850 bytes, which
+looks for EXE386.EXE or RUN386.EXE on the PATH). The P3 starts where the MZ
+header's page count ends, and every offset in it counts from there: the file
+is read as the P3 it carries, `stub` its stub's length (0 for a plain .EXP).
+
     python -m fmtownskit.exp GAME.EXP                  # header, parameters, symbols' count
     python -m fmtownskit.exp GAME.EXP --image out.bin  # the image as loaded at 0
     python -m fmtownskit.exp GAME.EXP --symbols        # every symbol, by offset
@@ -97,8 +104,23 @@ def read_symbols(t):
     return segs, sorted(syms)
 
 
+def mz_length(data):
+    """An MZ header's own count of the file's bytes (pages of 512, the last one partial), or None."""
+    if data[:2] != b'MZ' or len(data) < 0x1C:
+        return None
+    last, pages = struct.unpack_from('<HH', data, 2)
+    return pages * 512 - ((512 - last) if last else 0)
+
+
 class Exp:
     def __init__(self, data):
+        self.stub = 0
+        if data[:2] == b'MZ':
+            n = mz_length(data)
+            if n is None or data[n:n + 2] != b'P3':
+                raise ValueError('an MZ file with no P3 where its header ends (%r)'
+                                 % (n if n is None else hex(n)))
+            self.stub, data = n, data[n:]
         if data[:2] != b'P3':
             raise ValueError('not a P3 .EXP (starts %r)' % data[:2])
         self.data = data
@@ -154,6 +176,8 @@ def main(argv=None):
         for off, seg, nm in e.symbols:
             print('%06x %d %s' % (off, seg, nm))
         return
+    if e.stub:
+        print('%-16s %#x bytes of MZ stub before the P3 (offsets below count from it)' % ('bound', e.stub))
     for n, v in e.fields():
         if v:
             print('%-16s %#x' % (n, v))

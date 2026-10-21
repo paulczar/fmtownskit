@@ -6,7 +6,9 @@ imposes on every program, independent of any particular title:
     disc     CD images (.cue with one or many files, raw .bin/.img, .iso):
              the tracks and their pregaps, ISO 9660, the IPL record,
              extraction, CD-DA to WAV
-    exp      Phar Lap 386|DOS-Extender executables (.EXP, P3 flat), their symbols
+    exp      Phar Lap 386|DOS-Extender executables (.EXP, P3 flat), their symbols,
+             a P3 bound behind an MZ stub
+    tbiosld  a TBIOS in modules (Phar Lap "MQ" images), laid out as TBIOSLD.SYS does
     towns    the machines: both memory maps (Towns and Marty), I/O ports,
              IRQs, machine ids, RUN386's selectors, DOS/Phar Lap names
     x86map   a program's 32-bit code: extents, functions, and every site
