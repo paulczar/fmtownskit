@@ -100,9 +100,16 @@ void Machine::read_block(uint32_t a, uint8_t* p, uint32_t n) {
 
 // VRAM's pages are host memory while every byte of the write mask is 0xFF.
 void Machine::vram_pages() {
-    bool plain = video.mask[0] == 0xFF && video.mask[1] == 0xFF && video.mask[2] == 0xFF && video.mask[3] == 0xFF;
+    bool plain = !count_access && video.mask[0] == 0xFF && video.mask[1] == 0xFF && video.mask[2] == 0xFF
+                 && video.mask[3] == 0xFF;
     for (uint32_t a = 0; a < 0x100000; a += 0x1000)
         g_x86_page[(0x80000000u + a) >> 12] = plain ? &vram[a & 0x7FFFF] : nullptr;
+}
+
+void Machine::set_count_access(bool on) {
+    count_access = on;
+    vram_pages();
+    for (uint32_t a = 0; a < 0x20000; a += 0x1000) g_x86_page[(0x81000000u + a) >> 12] = on ? nullptr : &sprram[a];
 }
 
 static inline uint32_t packed(uint32_t o) {
@@ -119,6 +126,7 @@ static uint8_t read8(Machine& m, uint32_t a) {
         return m.sound.wave[bank | (a & 0xFFF)];
     }
     if (a >= 0xC2100000u && a < 0xC2140000u && !m.font.empty()) return m.font[(a - 0xC2100000u) % m.font.size()];
+    if (a >= 0x81000000u && a < 0x81020000u) return m.sprram[a - 0x81000000u];     // count_access
     unknown("read of linear %08x (no device)", a & ~0xFFFu);
     return 0;
 }
@@ -137,16 +145,25 @@ static void write8(Machine& m, uint32_t a, uint8_t v) {
         m.sound.wave[bank | (a & 0xFFF)] = v;
         return;
     }
+    if (a >= 0x81000000u && a < 0x81020000u) { m.sprram[a - 0x81000000u] = v; return; }   // count_access
     unknown("write of linear %08x (no device)", a & ~0xFFFu);
 }
 
 uint32_t Machine::mem_read(uint32_t a, int n) {
+    if (count_access) {
+        if (a >= 0x80000000u && a < 0x80200000u) ++access.vram_r;
+        else if (a >= 0x81000000u && a < 0x81020000u) ++access.spr_r;
+    }
     uint32_t v = 0;
     for (int k = 0; k < n; ++k) v |= (uint32_t)read8(*this, a + k) << (8 * k);
     return v;
 }
 
 void Machine::mem_write(uint32_t a, int n, uint32_t v) {
+    if (count_access) {
+        if (a >= 0x80000000u && a < 0x80200000u) ++access.vram_w;
+        else if (a >= 0x81000000u && a < 0x81020000u) ++access.spr_w;
+    }
     for (int k = 0; k < n; ++k) write8(*this, a + k, (uint8_t)(v >> (8 * k)));
 }
 

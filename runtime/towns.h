@@ -157,8 +157,17 @@ public:
     void out8(uint32_t port, uint8_t v);
 
     // time and interrupts
-    uint64_t now = 0;                   // guest clocks run (the CPU's c.clocks)
+    uint64_t now = 0;                   // the machine's clocks run (kClock a second)
     uint64_t next_vsync = kFrameClocks;
+    // The CPU's rate against the machine's clock, in percent: 100 runs the 386 at kClock, as
+    // MAME's i386 (the datasheet's clocks, no wait states); less gives each of its clocks more
+    // of the machine's time -- the devices, the timers and the sound keep theirs. The CPU's
+    // count (c.clocks) and the machine's (`now`) are the same at 100.
+    int cpu_rate = 100;
+    uint64_t rate_cpu0 = 0, rate_now0 = 0;      // where the rate last changed, on both counts
+    uint64_t machine_time(uint64_t cpu_clocks) const { return rate_now0 + (cpu_clocks - rate_cpu0) * 100 / (uint64_t)cpu_rate; }
+    uint64_t cpu_time(uint64_t t) const { return rate_cpu0 + ((t - rate_now0) * (uint64_t)cpu_rate + 99) / 100; }
+    void set_cpu_rate(int percent);     // from `now` on (the CPU's count there is cpu_time(now))
     uint64_t frame = 0;                 // VSYNCs so far
     bool vblank = false;
     uint64_t vblank_end = 0;
@@ -197,6 +206,7 @@ public:
     // the Towns pad as the player holds it (kPad* bits): Run and Select are wired as left with
     // right and up with down, as MAME's townspad has them
     void set_pad(int port, unsigned held);
+    unsigned pad_held[2] = {};          // what set_pad was last given (a host's recording)
     // the mouse in the second port, as MAME's fmtowns has one there (an MSX mouse: each change
     // of its pin 8 -- 0x4D6 bit 5 -- gives the next nibble of the X and Y movement since the
     // last read, a pause of over 3 ms starting again from the first); `x`, `y` where the host
@@ -205,6 +215,12 @@ public:
                    uint64_t last = 0; int16_t read_x = 0, read_y = 0, x = 0, y = 0;
                    uint8_t buttons = 0xFF; } mouse;
     void vram_pages();                  // map VRAM's pages as host memory, or not (write mask)
+    // a diagnostic of where the CPU's time goes: every access to VRAM and sprite RAM (their
+    // pages then left unmapped, so each goes through mem_read/mem_write) and to the ports, counted
+    // (among them the pads' reads, 0x4D0-0x4D3, and the 1 us waits written to 0x6C)
+    struct AccessCount { uint64_t vram_r = 0, vram_w = 0, spr_r = 0, spr_w = 0, io_r = 0, io_w = 0, pad_r = 0, wait_w = 0; } access;
+    bool count_access = false;
+    void set_count_access(bool on);
     void draw_sprites();
     // the frame as MAME's screen_update draws it: width x height of 0xRRGGBB
     void render(std::vector<uint32_t>& rgb, int& width, int& height);
@@ -229,6 +245,10 @@ public:
     std::vector<std::string> search_dirs;   // the directories 4Eh searched (the DTA keeps an index)
     bool exited = false;
     int exit_code = 0;
+    // DOS's date and time (2Ah, 2Ch): the host's clock, as MAME's RTC is, or with `clock_start`
+    // set (seconds since 1970, the host's local time) that moment plus the machine's time run:
+    // a run that can be played again the same
+    int64_t clock_start = 0;
     void int21(X86Cpu& c);
     // the CD BIOS: `buf` the linear address of the call's buffer (DS:DI in real mode through
     // Phar Lap's 2511h; DS:EDI when the program raises int 93h itself)

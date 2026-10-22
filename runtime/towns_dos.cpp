@@ -215,9 +215,13 @@ void Machine::int21(X86Cpu& c) {
         return;
     }
     case 0x2A: case 0x2C: {                         // the date (AL weekday, CX year, DH month, DL day),
-        // the time (CH hour, CL minutes, DH seconds, DL hundredths): the host's, as MAME's RTC
-        auto now = std::chrono::system_clock::now();
-        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        // the time (CH hour, CL minutes, DH seconds, DL hundredths): the host's, as MAME's RTC,
+        // or clock_start's plus the machine's time
+        auto host = std::chrono::system_clock::now();
+        if (clock_start)
+            host = std::chrono::system_clock::time_point(std::chrono::seconds(clock_start))
+                   + std::chrono::milliseconds(now / (kClock / 1000));
+        std::time_t t = std::chrono::system_clock::to_time_t(host);
         std::tm lt{};
         if (const std::tm* p = std::localtime(&t)) lt = *p;
         if (ah == 0x2A) {
@@ -225,7 +229,7 @@ void Machine::int21(X86Cpu& c) {
             s16(c, 1, (uint32_t)(lt.tm_year + 1900));
             s16(c, 2, (uint32_t)((lt.tm_mon + 1) << 8 | lt.tm_mday));
         } else {
-            auto cs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() / 10 % 100;
+            auto cs = std::chrono::duration_cast<std::chrono::milliseconds>(host.time_since_epoch()).count() / 10 % 100;
             s16(c, 1, (uint32_t)(lt.tm_hour << 8 | lt.tm_min));
             s16(c, 2, (uint32_t)(lt.tm_sec << 8 | (int)cs));
         }
@@ -783,7 +787,9 @@ void run386_load(Machine& m, X86Cpu& c, const P3& p) {
     x86_load_seg(c, 1, 0x0C);
     for (int n : {0, 2, 3, 4, 5}) x86_load_seg(c, n, 0x14);
     c.eip = p.eip;
-    c.budget = (int32_t)m.next_event();
+    // the CPU's count goes on from the last program's: the machine's time does
+    c.clocks = m.cpu_time(m.now);
+    c.budget = (int32_t)std::min<uint64_t>(m.cpu_time(m.next_event()) - c.clocks, 1u << 30);
 }
 
 }  // namespace towns

@@ -2,6 +2,7 @@
 #include "towns_sdl.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <string>
 #include <vector>
 
 namespace towns {
@@ -18,6 +19,8 @@ struct SdlHost::Impl {
     std::vector<uint32_t> rgb;
     std::vector<int16_t> sound;
     uint64_t next_ns = 0;                   // the pace without sound: the next frame's time
+    std::string title;
+    int shown_rate = 0;                     // the CPU's rate the title shows
     float mx = 0, my = 0;                   // the host mouse's movement not yet given, in frame pixels
     ~Impl() {
         for (SDL_Gamepad* g : pads) SDL_CloseGamepad(g);
@@ -35,6 +38,7 @@ SdlHost::~SdlHost() = default;
 bool SdlHost::open(const SdlOptions& o, std::string& err) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) { err = SDL_GetError(); return false; }
     p_ = std::make_unique<Impl>();
+    p_->title = o.title;
     int w = 640, h = 480, scale = o.scale;
     if (scale <= 0) {
         SDL_Rect r;
@@ -94,6 +98,9 @@ void SdlHost::vsync(Machine& m) {
             if (e.key.scancode == SDL_SCANCODE_ESCAPE) throw Stop{0};
             if (e.key.scancode == SDL_SCANCODE_F11 || (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(s.win, !(SDL_GetWindowFlags(s.win) & SDL_WINDOW_FULLSCREEN));
+            if (e.key.scancode == SDL_SCANCODE_F5) m.set_cpu_rate(m.cpu_rate - 5);
+            if (e.key.scancode == SDL_SCANCODE_F6) m.set_cpu_rate(m.cpu_rate + 5);
+            if (e.key.scancode == SDL_SCANCODE_F7) m.set_cpu_rate(100);
             break;
         case SDL_EVENT_MOUSE_MOTION:
             // the frame's pixels moved, as the mouse in the second port's counts
@@ -118,6 +125,11 @@ void SdlHost::vsync(Machine& m) {
             break;
         default: break;
         }
+    }
+    if (m.cpu_rate != s.shown_rate) {
+        s.shown_rate = m.cpu_rate;
+        std::string t = s.title + "  -  CPU " + std::to_string(m.cpu_rate) + "%";
+        SDL_SetWindowTitle(s.win, t.c_str());
     }
     // the keyboard and the first gamepad are the first pad, a second gamepad the second
     unsigned p0 = held_keys(), p1 = 0;

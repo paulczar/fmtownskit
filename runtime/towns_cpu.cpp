@@ -95,12 +95,14 @@ bool x86_lsl(X86Cpu&, uint32_t sel, uint32_t& limit) {
 }
 
 uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
-    g_towns->advance(c.clocks);
+    g_towns->advance(g_towns->machine_time(c.clocks));
+    if (g_towns->count_access) { ++g_towns->access.io_r; if ((port & ~3u) == 0x4D0) ++g_towns->access.pad_r; }
     return g_towns->in(port, n);
 }
 
 void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
-    g_towns->advance(c.clocks);
+    g_towns->advance(g_towns->machine_time(c.clocks));
+    if (g_towns->count_access) { ++g_towns->access.io_w; if (port == 0x6C) ++g_towns->access.wait_w; }
     g_towns->out(port, n, v);
 }
 
@@ -120,12 +122,12 @@ static void take(X86Cpu& c, int vec) {
 
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
-    m.advance(c.clocks);
+    m.advance(m.machine_time(c.clocks));
     while (c.fl & X86_IF) {
         int vec = m.pending_irq();
         if (vec < 0) break;
         take(c, vec);
-        m.advance(c.clocks);
+        m.advance(m.machine_time(c.clocks));
     }
     while (c.fl & X86_IF) {             // the timer BIOS's callbacks (int 97h), as its interrupt calls them
         int n = m.t97_due();
@@ -145,16 +147,16 @@ void x86_poll(X86Cpu& c) {
         std::copy_n(r, 8, c.r);
         for (int k = 0; k < 6; ++k) x86_load_seg(c, k, s[k]);
         c.fl = fl;
-        m.advance(c.clocks);
+        m.advance(m.machine_time(c.clocks));
     }
     uint64_t next = m.next_event();
-    int64_t left = (int64_t)(next - c.clocks);
+    int64_t left = (int64_t)(m.cpu_time(next) - c.clocks);
     c.budget = (int32_t)(left < 64 ? 64 : left > (1 << 30) ? (1 << 30) : left);
 }
 
 void x86_int(X86Cpu& c, int n, uint32_t next) {
     towns::Machine& m = *g_towns;
-    m.advance(c.clocks);
+    m.advance(m.machine_time(c.clocks));
     c.eip = next;
     switch (n) {
     case 0x21: m.int21(c); break;

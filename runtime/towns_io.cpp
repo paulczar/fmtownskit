@@ -144,6 +144,15 @@ void Machine::set_pad(int port, unsigned held) {
     if (held & kPadRun) v &= ~0x0C;         // RUN: left and right at once
     if (held & kPadSelect) v &= ~0x03;      // SELECT: up and down at once
     pad[port & 1] = v;
+    pad_held[port & 1] = held;
+}
+
+// ---- the CPU's rate --------------------------------------------------------------------------
+void Machine::set_cpu_rate(int percent) {
+    percent = std::clamp(percent, 1, 1000);
+    rate_cpu0 = cpu_time(now);
+    rate_now0 = now;
+    cpu_rate = percent;
 }
 
 // ---- the ports -------------------------------------------------------------------------------

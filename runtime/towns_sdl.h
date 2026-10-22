@@ -9,7 +9,8 @@
 // of sound wait in the queue), so the game keeps the time the sound card keeps.
 //
 //   keyboard: arrows, X = A, Z = B, Enter = Run, Right Shift or Backspace = Select;
-//             F11 or Alt+Enter full screen, Tab held runs unpaced, Escape quits
+//             F11 or Alt+Enter full screen, Tab held runs unpaced, Escape quits;
+//             F5 and F6 the CPU's rate 5% down and up, F7 back to 100% (the title shows it)
 //   gamepad:  d-pad or left stick, East = A, South = B, Start = Run, Back = Select
 //             (a second gamepad is the second pad when the machine has no mouse there)
 //   mouse:    the mouse in the second port (its movement in the frame's pixels, the left and
