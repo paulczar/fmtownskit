@@ -10,7 +10,8 @@ machine under it.
 
 The same idea as [wiikit](https://github.com/vs-sr-dev/wiikit),
 [saturnkit](https://github.com/vs-sr-dev/saturnkit),
-[3dokit](https://github.com/vs-sr-dev/3dokit) and ps2kit, for the FM Towns.
+[3dokit](https://github.com/vs-sr-dev/3dokit) and
+[ps2kit](https://github.com/vs-sr-dev/ps2kit), for the FM Towns.
 Each Towns game has its own engine and formats, but much of every port is
 the *same* work: the same CD layout and boot, the same RUN386 extender
 loading the same kind of .EXP, the same TBIOS for graphics, sprites, sound
