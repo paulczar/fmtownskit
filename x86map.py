@@ -367,6 +367,13 @@ def main(argv=None):
     else:
         e = expmod.Exp(data)
         image, base, entry = e.image, e.base_offset, e.eip
+        # An MP has no entry point (its 0x18 field is the header size), so the first
+        # seed is the entry, as in i386.py.
+        if entry is None:
+            if not seeds:
+                sys.exit('%s: this is an MP, which has no entry point; '
+                         'give one with --seed' % a.file)
+            entry, seeds = seeds[0], seeds[1:]
         if a.symbol_seeds:
             end = int(a.symbol_seeds, 16)
             seeds += [off for off, _, _ in e.symbols if off < end and off != entry]
