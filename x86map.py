@@ -295,8 +295,62 @@ class Map:
                         c.set(n, None)
         return out
 
+    def refs_at(self, site):
+        """The absolute-address references made by the single instruction at `site`.
+
+        The same classification as `refs` for one instruction, which is what a caller wants
+        when walking the whole map once rather than searching for one address. `refs` asks
+        "who names this address"; this asks "what does this instruction name", and a sweep
+        needs the second, because calling `refs` per extent means passing a window and a
+        window wider than the gap to the next object reports that object too.
+
+        THAT IS NOT HYPOTHETICAL. Sweeping one extent of 3,984 bytes with the width as its
+        window produced 1,048 references, and on inspection they were the player record at
+        0xceca0 and 0xcdf6b to 0xcdf6f, which lie ABOVE the extent. The window had reached
+        past it. Nothing was wrong with the data; the question was asked wrongly.
+        """
+        ins = self.insn.get(site)
+        if ins is None or not ins.operands:
+            return []
+        m, ops = ins.mnemonic, ins.operands
+        out = []
+        for i, op in enumerate(ops):
+            if op.type == X.X86_OP_MEM:
+                d = op.mem.disp & 0xFFFFFFFF
+                # an absolute address has no base; a record offset such as [edx + 0xcdf6b]
+                # is still reported, with the base named, because that is how this program
+                # reaches its globals
+                indexed = bool(op.mem.index)
+                based = ins.reg_name(op.mem.base) if op.mem.base else None
+                dst = i == 0 and m in ('mov', 'movzx', 'movsx', 'add', 'sub', 'or', 'and',
+                                        'xor', 'inc', 'dec', 'shl', 'shr', 'sar')
+                if indexed:
+                    form = 'indexed-%s' % ('write' if dst else 'read')
+                elif based and m.startswith('lea'):
+                    form = 'address+base'
+                elif based:
+                    form = 'scalar-%s' % ('write' if dst else 'read')
+                elif m.startswith('lea'):
+                    form = 'address'
+                else:
+                    form = 'scalar-%s' % ('write' if dst else 'read')
+                out.append({'site': site, 'op': m, 'text': ins.op_str, 'form': form, 'disp': d,
+                            'base': based,
+                            'index': ins.reg_name(op.mem.index) if op.mem.index else None,
+                            'scale': op.mem.scale if op.mem.index else None})
+            elif op.type == X.X86_OP_IMM and m in ('push', 'mov', 'cmp', 'add', 'sub', 'or',
+                                                    'and', 'xor', 'test'):
+                v = op.imm & 0xFFFFFFFF
+                form = 'argument' if m == 'push' else 'immediate-%s' % m
+                out.append({'site': site, 'op': m, 'text': ins.op_str, 'form': form, 'disp': v,
+                            'base': None, 'index': None, 'scale': None})
+        return out
+
     def refs(self, addr, window=0):
-        """Every reached instruction that names `addr`, with the form of the reference.
+        """Every reached instruction naming `addr`, with the form of the reference.
+
+        A search over the whole map, built from `refs_at` so the two cannot classify a
+        reference differently. Use `refs_at` for a sweep.
 
         WHY FORM AND NOT JUST PRESENCE. Whether an address is touched at all is weak; how it
         is touched is most of what a caller wanted to know. The same displacement means
@@ -325,45 +379,9 @@ class Map:
         """
         out = []
         for a in sorted(self.insn):
-            ins = self.insn[a]
-            m, ops = ins.mnemonic, ins.operands
-            if not ops:
-                continue
-            for i, op in enumerate(ops):
-                if op.type == X.X86_OP_MEM:
-                    d = op.mem.disp & 0xFFFFFFFF
-                    if not (addr - window <= d < addr + max(1, window)):
-                        continue
-                    indexed = bool(op.mem.index)
-                    based = ins.reg_name(op.mem.base) if op.mem.base else None
-                    dst = i == 0 and m in ('mov', 'movzx', 'movsx', 'add', 'sub', 'or', 'and',
-                                            'xor', 'inc', 'dec', 'shl', 'shr', 'sar')
-                    if indexed:
-                        form = 'indexed-%s' % ('write' if dst else 'read')
-                    elif based and m.startswith('lea'):
-                        form = 'address+base'
-                    elif based:
-                        form = ('scalar-%s' % ('write' if dst else 'read'))
-                    elif m.startswith('lea'):
-                        form = 'address'
-                    elif dst:
-                        form = 'scalar-write'
-                    else:
-                        form = 'scalar-read'
-                    out.append({'site': a, 'op': m, 'text': ins.op_str, 'form': form,
-                                'disp': d,
-                                'base': based,
-                                'index': ins.reg_name(op.mem.index) if op.mem.index else None,
-                                'scale': op.mem.scale if op.mem.index else None})
-                elif op.type == X.X86_OP_IMM and m in ('push', 'mov', 'cmp', 'add', 'sub', 'or',
-                                                        'and', 'xor', 'test'):
-                    v = op.imm & 0xFFFFFFFF
-                    if not (addr - window <= v < addr + max(1, window)):
-                        continue
-                    form = 'argument' if m == 'push' else 'immediate-%s' % m
-                    out.append({'site': a, 'op': m, 'text': ins.op_str, 'form': form,
-                                'disp': v, 'index': None, 'scale': None})
-        out.sort(key=lambda r: r['site'])
+            for r in self.refs_at(a):
+                if addr - window <= r['disp'] < addr + max(1, window):
+                    out.append(r)
         return out
 
     def extents(self, slack=8):
