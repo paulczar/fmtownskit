@@ -295,6 +295,77 @@ class Map:
                         c.set(n, None)
         return out
 
+    def refs(self, addr, window=0):
+        """Every reached instruction that names `addr`, with the form of the reference.
+
+        WHY FORM AND NOT JUST PRESENCE. Whether an address is touched at all is weak; how it
+        is touched is most of what a caller wanted to know. The same displacement means
+        different things in each of these, and the operand structure tells them apart without
+        knowing anything about the program:
+
+            lea edx, [eax*4 + 0xd03e7]   an array of dwords, indexed, stride from the scale
+            lea eax, [0xd03e7]           the address of a whole object, usually passed on
+            push 0xd03e7                 the same, as an argument, order less certain
+            mov [0xd03e7], al            a byte is written there: a scalar field, not a table
+            mov eax, [0xd03e7]           a word or dword is read: a scalar or a first element
+            cmp dword [0xd03e7], 0       read as one value, and compared
+
+        A displacement that lands in the MIDDLE of an object is indistinguishable here from
+        the object's start, so `window` widens the test to `addr - window <= disp < addr`. With
+        window=0 only an exact match is reported.
+
+        BASES ARE REPORTED, NOT DROPPED, and that distinction cost a blind spot. The first
+        version skipped every memory operand with a base register on the reasoning that
+        `[ebp-4]` is a frame slot rather than an absolute address. True, and irrelevant here:
+        this program reaches its globals as `[edx + 0xcdf6b]`, where edx holds a record base
+        the code computed. Dropping those reported 4 references to PLAYER_X where a
+        displacement scan of the same image finds 68 sites and 12 writes. So a base is kept
+        and named, and the caller can tell the two cases apart because a frame slot has a
+        small displacement and a global has a large one.
+        """
+        out = []
+        for a in sorted(self.insn):
+            ins = self.insn[a]
+            m, ops = ins.mnemonic, ins.operands
+            if not ops:
+                continue
+            for i, op in enumerate(ops):
+                if op.type == X.X86_OP_MEM:
+                    d = op.mem.disp & 0xFFFFFFFF
+                    if not (addr - window <= d < addr + max(1, window)):
+                        continue
+                    indexed = bool(op.mem.index)
+                    based = ins.reg_name(op.mem.base) if op.mem.base else None
+                    dst = i == 0 and m in ('mov', 'movzx', 'movsx', 'add', 'sub', 'or', 'and',
+                                            'xor', 'inc', 'dec', 'shl', 'shr', 'sar')
+                    if indexed:
+                        form = 'indexed-%s' % ('write' if dst else 'read')
+                    elif based and m.startswith('lea'):
+                        form = 'address+base'
+                    elif based:
+                        form = ('scalar-%s' % ('write' if dst else 'read'))
+                    elif m.startswith('lea'):
+                        form = 'address'
+                    elif dst:
+                        form = 'scalar-write'
+                    else:
+                        form = 'scalar-read'
+                    out.append({'site': a, 'op': m, 'text': ins.op_str, 'form': form,
+                                'disp': d,
+                                'base': based,
+                                'index': ins.reg_name(op.mem.index) if op.mem.index else None,
+                                'scale': op.mem.scale if op.mem.index else None})
+                elif op.type == X.X86_OP_IMM and m in ('push', 'mov', 'cmp', 'add', 'sub', 'or',
+                                                        'and', 'xor', 'test'):
+                    v = op.imm & 0xFFFFFFFF
+                    if not (addr - window <= v < addr + max(1, window)):
+                        continue
+                    form = 'argument' if m == 'push' else 'immediate-%s' % m
+                    out.append({'site': a, 'op': m, 'text': ins.op_str, 'form': form,
+                                'disp': v, 'index': None, 'scale': None})
+        out.sort(key=lambda r: r['site'])
+        return out
+
     def extents(self, slack=8):
         ext = []
         for a in sorted(self.insn):
@@ -361,6 +432,12 @@ def main(argv=None):
                          'without error, so without this a descent into zero fill succeeds '
                          'silently and endlessly')
     ap.add_argument('--functions', action='store_true')
+    ap.add_argument('--refs', metavar='ADDR',
+                    help='every reached instruction naming this address, with the form of the '
+                         'reference: indexed (an array), address, scalar read or write, argument')
+    ap.add_argument('--refs-window', type=lambda s: int(s, 0), default=0, metavar='N',
+                    help='with --refs: also count displacements in ADDR-N..ADDR-1, for a '
+                         'displacement that lands inside an object')
     ap.add_argument('--mnemonics', action='store_true', help='how often each instruction occurs')
     a = ap.parse_args(argv)
     data = open(a.file, 'rb').read()
@@ -400,6 +477,20 @@ def main(argv=None):
         return
     m = Map(image, base, entry, seeds, e.table_end if e is not None and e.symbols else None,
             no_code=expmod.parse_no_code(a.no_code))
+    if a.refs is not None:
+        target = int(a.refs, 16)
+        rows = m.refs(target, a.refs_window)
+        if not rows:
+            print('no reached instruction names %#x%s' % (target,
+                  '' if not a.refs_window else ' within %#x below it' % a.refs_window))
+            return
+        print('%#x: %d reference%s from reached code' % (target, len(rows), '' if len(rows) == 1 else 's'))
+        for r in rows:
+            idx = '' if r['index'] is None else '  idx=%s*%d' % (r['index'], r['scale'])
+            base = '' if r.get('base') is None else '  base=%s' % r['base']
+            print('  %-22s %#08x  %-8s %s%s%s'
+                  % (r['form'], r['site'], r['op'], r['text'], idx, base))
+        return
     where = (lambda a: '') if e is None or not e.symbols else symbol_at(e)
     ext = m.extents()
     code = sum(i.size for i in m.insn.values())
