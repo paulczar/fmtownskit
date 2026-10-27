@@ -103,13 +103,19 @@ class Map:
         self._descend([entry] + list(seeds))
         self.sites = self._sites()
 
+    def in_no_code(self, a):
+        """Whether `a` falls in a range the caller says cannot hold code."""
+        for lo, hi in self.no_code:
+            if lo <= a < hi:
+                return True
+        return False
+
     def _at(self, a):
         off = a - self.base
         if not 0 <= off < len(self.img):
             return None
-        for lo, hi in self.no_code:
-            if lo <= a < hi:
-                return None
+        if self.in_no_code(a):
+            return None
         return next(self.md.disasm(self.img[off:off + 16], a), None)
 
     def _descend(self, work):
@@ -155,13 +161,49 @@ class Map:
                     break
                 pc += ins.size
 
+    def _plausible(self, base, n):
+        """How many of `n` dwords from `base` are addresses of decodable code.
+
+        Used only to choose between a declared table base and the instruction's own end, so it
+        must be cheap and must not decode. An entry counts when it lies inside the image and
+        outside the no-code ranges: that is enough to tell a table of code addresses from a
+        read that landed in the middle of code.
+        """
+        ok = 0
+        for k in range(n):
+            off = base - self.base + 4 * k
+            if off < 0 or off + 4 > len(self.img):
+                return ok
+            v = int.from_bytes(self.img[off:off + 4], 'little')
+            if v == 0:
+                continue
+            if 0 <= v - self.base < len(self.img) and not self.in_no_code(v):
+                ok += 1
+        return ok
+
     def _table(self, pc, ins):
         """A transfer through `[index*4 + table]`: the table's entries, or None.
 
         The bound is the `cmp index8/index, N` and `ja` just before (N+1
         entries). With none, entries are read while each is 0 (a hole) or an
         address inside the image that decodes, up to 256 -- and, when the
-        program has symbols, not past the next symbol (`table_end`)."""
+        program has symbols, not past the next symbol (`table_end`).
+
+        THE DISPLACEMENT IS NOT ALWAYS THE TABLE BASE. MetaWare emits jump tables
+        immediately after the jump instruction and leaves a biased value in the encoding's
+        displacement, so `jmp cs:[edx*4 + 0xE2D29]` can mean the table at 0xE2F29, which is
+        where the instruction ends. Reading at the displacement gives 23 dwords lifted out of
+        the middle of code and produces garbage targets that the descent then follows.
+
+        Measured on the image this was written for: at 0xE2F21 the declared base holds 0 valid
+        addresses out of 23 and the instruction's end holds 23 of 23. The same test on four
+        more sites gives 8 of 8 at the instruction's end, so it is a property of the compiler
+        rather than of one routine.
+
+        The choice is made on evidence, not on a rule: both candidates are scored and the
+        declared base is kept whenever it is at least as good, so a program whose tables really
+        are at the displacement is unaffected.
+        """
         if not ins.operands or ins.operands[0].type != X.X86_OP_MEM:
             return None
         mem = ins.operands[0].mem
@@ -199,6 +241,13 @@ class Map:
                 bound = None if any(rewrites(r) for r in back[k + 2:]) else \
                     (n + 1 if q.mnemonic in ('ja', 'jg') else n)
         out = []
+        # Choose the base on evidence: the declared displacement, or the instruction's own end.
+        # A bound of 0 means the count is not yet known, so a fixed probe of 8 is used.
+        probe = bound if bound is not None else 8
+        end_candidate = pc + ins.size
+        if end_candidate != tbl and 0 <= end_candidate - self.base < len(self.img):
+            if self._plausible(end_candidate, probe) > self._plausible(tbl, probe):
+                tbl = end_candidate
         end = self.table_end(tbl) if self.table_end and bound is None else None
         for k in range(bound if bound is not None else 256):
             off = tbl - self.base + 4 * k
