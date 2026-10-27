@@ -104,6 +104,24 @@ def read_symbols(t):
     return segs, sorted(syms)
 
 
+def parse_no_code(specs):
+    """LO:HI pairs, hex, to half-open ranges. One parser so the tools cannot disagree.
+
+    An empty range (LO == HI) is dropped rather than refused, so a generated list with a
+    degenerate entry still works. HI below LO is a mistake and is refused, because silently
+    producing an empty range would look like the guard was in place when it was not.
+    """
+    out = []
+    for s in specs or ():
+        lo_s, _, hi_s = s.partition(':')
+        lo, hi = int(lo_s, 16), int(hi_s, 16)
+        if hi < lo:
+            raise ValueError('--no-code %s: HI is below LO' % s)
+        if hi > lo:
+            out.append((lo, hi))
+    return out
+
+
 def mz_length(data):
     """An MZ header's own count of the file's bytes (pages of 512, the last one partial), or None."""
     if data[:2] != b'MZ' or len(data) < 0x1C:

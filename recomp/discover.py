@@ -23,17 +23,39 @@ import argparse
 import collections
 import sys
 
+from .. import exp as expmod
 from .. import i386
 from ..i386 import Refused, decode
+from ..exp import parse_no_code
 
 ENDS = ('ret', 'retf', 'iret', 'iretd', 'hlt', 'ljmp')
 
 
 class Program:
-    def __init__(self, image, base=0, entries=(), name='prog', far_table=None, table_end=None, names=None):
+    def __init__(self, image, base=0, entries=(), name='prog', far_table=None, table_end=None, names=None,
+                 no_code=()):
         self.img, self.base, self.name = image, base, name
         self.names = names or {}       # offset -> a program's symbols there (for the C++'s comments)
         self.table_end = table_end     # a program's symbols: where a read table must stop
+        # NO_CODE: half-open [lo, hi) ranges where code cannot be, so a descent stops there.
+        #
+        # WHY THIS IS A PARAMETER AND NOT A SCAN. A linker tells a program where its
+        # uninitialised data begins (`_edata`, `_end`) and where its stack is; a program
+        # whose symbols were dropped does not, and the regions have to be found some other
+        # way. Both are the same fact -- this range cannot hold an instruction -- so the
+        # kit takes that fact and lets the caller find it. A scan for zero runs is one way,
+        # and it belongs to the caller, because how a program's regions can be recognised
+        # is not the same question on a program with symbols as on one without.
+        #
+        # A range need not be zero. A stack region is absent from the file rather than
+        # filled with zeros, and refusing to decode it is just as right.
+        #
+        # THE DAMAGE THIS PREVENTS. Zeros are valid x86: `00 00` is `add [eax], al`, two
+        # bytes, forever, with no error and no loss of alignment. A descent that reaches a
+        # zero region therefore does not fail, it succeeds silently and endlessly. Measured
+        # on a flat image 75.6 percent of which was zero fill: one seed produced a single
+        # 152,933-byte extent whose first byte was zero.
+        self.no_code = sorted((int(lo), int(hi)) for lo, hi in no_code)
         self.insn = {}                 # addr -> Insn
         self.functions = set()
         self.targets = set()           # jump targets
@@ -114,10 +136,20 @@ class Program:
                 changed = True
         return changed
 
+    def in_no_code(self, a):
+        """Whether `a` falls in a range the caller says cannot hold code."""
+        for lo, hi in self.no_code:
+            if lo <= a < hi:
+                return (lo, hi)
+        return None
+
     def at(self, a):
         off = a - self.base
         if not 0 <= off < len(self.img):
             raise Refused('outside the image')
+        r = self.in_no_code(a)
+        if r is not None:
+            raise Refused('in a no-code range %#x-%#x' % r)
         return decode(self.img, off, a)
 
     def _descend(self, work):
@@ -306,6 +338,12 @@ class Program:
                  % (self.name, len(self.functions), len(self.insn), code, len(self.tables),
                     sum(1 for t in self.tables.values() if t[2]), len(self.indirect),
                     len(self.refused), len(self.conflicts()))]
+        if self.no_code:
+            # A count read without knowing the guard was on is not a count anybody can
+            # check, and the difference is large: on one flat image a single seed went
+            # from 143,025 instructions to 4,090 when two ranges were excluded.
+            lines.append('  no-code ranges: %s (a target there is refused, not decoded)'
+                         % ', '.join('%#x-%#x' % r for r in self.no_code))
         for a, why in sorted(self.refused.items()):
             lines.append('  refused at %#x: %s' % (a, why))
         for a, b in self.conflicts()[:20]:
@@ -315,19 +353,25 @@ class Program:
         return '\n'.join(lines)
 
 
-def load(path, raw=False, base=0, seeds=(), far_table=None, name=None, symbol_seeds=None):
+def load(path, raw=False, base=0, seeds=(), far_table=None, name=None, symbol_seeds=None, no_code=()):
     """symbol_seeds: with a program's symbols, every symbol below this address (where its
-    code ends) is an entry too."""
+    code ends) is an entry too. no_code: half-open [lo, hi) ranges where code cannot be."""
     data = open(path, 'rb').read()
     if raw:
-        return Program(data, base, seeds, name or path, far_table)
-    from .. import exp
-    e = exp.Exp(data)
+        return Program(data, base, seeds, name or path, far_table, no_code=no_code)
+    e = expmod.Exp(data)
     seeds = list(seeds)
     if symbol_seeds is not None:
         seeds += [off for off, _, _ in e.symbols if off < symbol_seeds and off != e.eip]
-    return Program(e.image, e.base_offset, [e.eip] + seeds, name or path,
-                   table_end=e.table_end if e.symbols else None, names=e.names())
+    entry = e.eip
+    if entry is None:                  # an MP has no entry point: its first seed is one
+        if not seeds:
+            raise SystemExit('%s: this is an MP, which has no entry point; give one with --seed'
+                             % path)
+        entry, seeds = seeds[0], seeds[1:]
+    return Program(e.image, e.base_offset, [entry] + seeds, name or path,
+                   table_end=e.table_end if e.symbols else None, names=e.names(),
+                   no_code=no_code)
 
 
 def main(argv=None):
@@ -338,12 +382,15 @@ def main(argv=None):
     ap.add_argument('--far-table', metavar='FROM:TO')
     ap.add_argument('--seed', default='')
     ap.add_argument('--symbol-seeds', metavar='END', help='every symbol below END (hex) is an entry too')
+    ap.add_argument('--no-code', action='append', default=[], metavar='LO:HI',
+                    help='a half-open range where code cannot be, hex, repeatable')
     ap.add_argument('--report', action='store_true')
     ap.add_argument('--functions', action='store_true')
     a = ap.parse_args(argv)
     ft = tuple(int(x, 16) for x in a.far_table.split(':')) if a.far_table else None
     p = load(a.file, a.raw, int(a.base, 16), [int(x, 16) for x in a.seed.split(',') if x], ft,
-             symbol_seeds=int(a.symbol_seeds, 16) if a.symbol_seeds else None)
+             symbol_seeds=int(a.symbol_seeds, 16) if a.symbol_seeds else None,
+             no_code=parse_no_code(a.no_code))
     print(p.report())
     if a.functions:
         print(' '.join('%x' % f for f in sorted(p.functions)))

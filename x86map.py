@@ -79,13 +79,18 @@ class Consts:
 
 
 class Map:
-    def __init__(self, image, base, entry, seeds=(), table_end=None):
+    def __init__(self, image, base, entry, seeds=(), table_end=None, no_code=()):
         """table_end: a function giving where a table read with no bound must stop (a
-        program's symbols: `exp.Exp.table_end`), or None."""
+        program's symbols: `exp.Exp.table_end`), or None.
+
+        no_code: half-open [lo, hi) ranges where code cannot be. A target there is listed
+        as a bad transfer rather than decoded; see `recomp.discover.Program` for why zeros
+        make an unguarded descent succeed silently."""
         if capstone is None:
             raise SystemExit('x86map needs capstone')
         self.img = image
         self.base = base
+        self.no_code = sorted((int(lo), int(hi)) for lo, hi in no_code)
         self.md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
         self.md.detail = True
         self.insn = {}                     # addr -> capstone insn
@@ -102,6 +107,9 @@ class Map:
         off = a - self.base
         if not 0 <= off < len(self.img):
             return None
+        for lo, hi in self.no_code:
+            if lo <= a < hi:
+                return None
         return next(self.md.disasm(self.img[off:off + 16], a), None)
 
     def _descend(self, work):
@@ -347,6 +355,11 @@ def main(argv=None):
                          "is an entry too")
     ap.add_argument('--dis', metavar='ADDR')
     ap.add_argument('-n', type=int, default=30)
+    ap.add_argument('--no-code', action='append', default=[], metavar='LO:HI',
+                    help='a half-open range where code cannot be, hex, repeatable; a target '
+                         'there is listed rather than decoded. Zeros decode as instructions '
+                         'without error, so without this a descent into zero fill succeeds '
+                         'silently and endlessly')
     ap.add_argument('--functions', action='store_true')
     ap.add_argument('--mnemonics', action='store_true', help='how often each instruction occurs')
     a = ap.parse_args(argv)
@@ -385,7 +398,8 @@ def main(argv=None):
                 break
             print('  %06x  %-22s %s %s' % (ins.address, ins.bytes.hex(), ins.mnemonic, ins.op_str))
         return
-    m = Map(image, base, entry, seeds, e.table_end if e is not None and e.symbols else None)
+    m = Map(image, base, entry, seeds, e.table_end if e is not None and e.symbols else None,
+            no_code=expmod.parse_no_code(a.no_code))
     where = (lambda a: '') if e is None or not e.symbols else symbol_at(e)
     ext = m.extents()
     code = sum(i.size for i in m.insn.values())

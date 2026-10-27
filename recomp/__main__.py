@@ -164,22 +164,36 @@ def main(argv=None):
     ap.add_argument('--slice', metavar='LO-HI', help="vectors only for the functions in LO-HI (hex), to "
                     "selftest/<name>_<lo>-<hi>.txt")
     ap.add_argument('--jobs', type=int, default=1, help='processes making vectors')
+    ap.add_argument('--no-code', action='append', default=[], metavar='LO:HI',
+                    help='a half-open range where code cannot be, hex, repeatable, applied to '
+                         'every module; zeros decode as instructions without error, so a '
+                         'descent into zero fill otherwise succeeds silently and endlessly')
     a = ap.parse_args(argv)
     os.makedirs(os.path.join(a.out, 'selftest'), exist_ok=True)
-    mods = []
     from .. import exp as expmod
+    nocode = expmod.parse_no_code(a.no_code)
+    mods = []
     for spec in a.exp:
         name, path, cs, symend, seeds = parse(spec, False)
         e = expmod.Exp(open(path, 'rb').read())
         if symend is not None:
             seeds += [off for off, _, _ in e.symbols if off < symend and off != e.eip]
-        prog = discover.Program(e.image, e.base_offset, [e.eip] + seeds, name,
-                                table_end=e.table_end if e.symbols else None, names=e.names())
+        # An MP has no entry point (its 0x18 field is the header size), so its first
+        # seed is the entry, as in i386.py and x86map.py.
+        entry = e.eip
+        if entry is None:
+            if not seeds:
+                raise SystemExit('%s: this is an MP, which has no entry point; '
+                                 'give one in the seed list (name=FILE@CS+SEED)' % path)
+            entry, seeds = seeds[0], seeds[1:]
+        prog = discover.Program(e.image, e.base_offset, [entry] + seeds, name,
+                                table_end=e.table_end if e.symbols else None, names=e.names(),
+                                no_code=nocode)
         mods.append(Module(name, prog, cs, e.image, e.base_offset))
     for spec in a.raw:
         name, path, cs, far, seeds = parse(spec, True)
         data = open(path, 'rb').read()
-        prog = discover.Program(data, 0, seeds, name, far)
+        prog = discover.Program(data, 0, seeds, name, far, no_code=nocode)
         mods.append(Module(name, prog, cs, data, 0))
     if a.optest:
         image, entries = ST.optest_image([m.prog for m in mods])
