@@ -801,6 +801,15 @@ def main(argv=None):
     else:
         e = expmod.Exp(data)
         image, base, entry = e.image, e.base_offset, e.eip
+        # AN "MP" HAS NO ENTRY POINT, SO THE FIRST SEED IS THE ENTRY.
+        # P3 carries an EIP and seeds are additional. MP carries none (its 0x18 field
+        # is the header size, not an EIP), so without this every MP walk started at
+        # None and died in x86map with `NoneType - int`.
+        if entry is None:
+            if not seeds:
+                raise SystemExit('%s: this is an MP, which has no entry point; '
+                                 'give one with --seed' % a.file)
+            entry, seeds = seeds[0], seeds[1:]
         if a.symbol_seeds:
             seeds += [off for off, _, _ in e.symbols if off < int(a.symbol_seeds, 16) and off != entry]
     if a.dis:

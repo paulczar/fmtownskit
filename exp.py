@@ -112,9 +112,44 @@ def mz_length(data):
     return pages * 512 - ((512 - last) if last else 0)
 
 
+# The "MP" header: the 16-bit-header form, 30 bytes, level 1 flat.
+#
+# WHY THIS IS A SEPARATE TABLE AND NOT A FIELD OFFSET FUDGE. "MP" and "P3" agree
+# only on the first two bytes. P3 puts a u32 file size at 0x06 and the image
+# descriptor at 0x26/0x2A; MP keeps a page count pair there and carries no image
+# descriptor at all, because the image is the whole rest of the file. Reading an MP
+# through FIELDS does not produce a slightly wrong answer, it produces a
+# confidently wrong one: on ENCHANT.EXP the "relocation offset" comes out as
+# 0x1A0020, which is past the end of a 0x105B8E-byte file.
+#
+# Sizes: `pages` at 0x04 counts 512-byte pages and the last page is partial, so the
+# file length is (pages - 1) * 512 + lastPage. This reproduces ENCHANT.EXP's
+# 1,072,398 bytes exactly, which is the arithmetic that identifies the variant.
+MP_FIELDS = [
+    ('last_page', 0x02, 'H'), ('pages', 0x04, 'H'),
+    ('reloc_count', 0x06, 'H'), ('reloc_offset', 0x08, 'I'),
+    ('header_paras', 0x0C, 'H'), ('min_extra', 0x0E, 'H'), ('max_extra', 0x10, 'H'),
+    ('esp', 0x12, 'I'), ('checksum16', 0x16, 'H'), ('header_size', 0x18, 'H'),
+]
+
+
+def mp_length(data):
+    """An MP header's own count of the file's bytes, or None if the pair is impossible."""
+    if len(data) < 0x1A:
+        return None
+    last, pages = struct.unpack_from('<HH', data, 2)
+    if pages == 0 or last > 512:
+        return None
+    return (pages - 1) * 512 + last
+
+
 class Exp:
     def __init__(self, data):
         self.stub = 0
+        self.kind = 'P3'
+        if data[:2] == b'MP':
+            self._read_mp(data)
+            return
         if data[:2] == b'MZ':
             n = mz_length(data)
             if n is None or data[n:n + 2] != b'P3':
@@ -143,7 +178,67 @@ class Exp:
         self.rtp = data[self.rtp_offset:self.rtp_offset + self.rtp_size]
 
     def fields(self):
-        return [(n, getattr(self, n)) for n, _, _ in FIELDS]
+        table = MP_FIELDS if self.kind == 'MP' else FIELDS
+        return [(n, getattr(self, n)) for n, _, _ in table]
+
+    def _read_mp(self, data):
+        """The "MP" form: 30-byte header, image is everything after it, no entry point.
+
+        THE ENTRY POINT IS DELIBERATELY None. MP has no EIP field. The u16 at 0x18
+        reads as 30 on ENCHANT.EXP, which is the header size and is consistent with
+        where the zero padding begins, but reading it as an entry would start a walk
+        at address 0x1E, inside the header, and produce a confidently wrong map.
+        Callers must supply a seed. `i386.py` already does this for the `--raw` and
+        `--base`/`--far-table` paths, which is the same situation.
+
+        The base is 0 for the same reason `docs/` gives: every absolute operand in
+        ENCHANT.EXP is below 0x110000, which is only possible if the image loads at
+        0 rather than the 0x100000 that a 16-bit-header MP conventionally suggests.
+        """
+        self.kind = 'MP'
+        self.data = data
+        for name, off, t in MP_FIELDS:
+            setattr(self, name, struct.unpack_from('<' + t, data, off)[0])
+        n = mp_length(data)
+        if n is None:
+            raise ValueError('MP: lastPage/pages at 0x02 are impossible (%d/%d)'
+                             % (self.last_page, self.pages))
+        if n != len(data):
+            raise ValueError('MP: lastPage/pages say %d bytes, the file has %d' % (n, len(data)))
+        if self.reloc_count:
+            raise ValueError('MP: %d relocations, not read here'
+                             % self.reloc_count)
+        # The header's own size field is trusted only where it is plausible. Below 0x1E
+        # it would overlap the fields already read, and past the file is impossible.
+        # The upper bound is tight rather than `<= len(data)`: a flat MP header is a
+        # handful of bytes, and a value like 0xFF only passed the loose form of this
+        # check, which was decoration. 0x400 is well past any MP header seen and well
+        # short of anything meaningful being misread as one.
+        if not 0x1E <= self.header_size <= 0x400:
+            raise ValueError('MP: header size %#x is not a plausible value'
+                             % self.header_size)
+        # THE IMAGE IS THE WHOLE FILE, NOT THE FILE MINUS THE HEADER.
+        #
+        # The header's size field says 0x1E and the obvious reading is that the image
+        # begins there. It does not. Measured on ENCHANT.EXP: the pixel writer this
+        # project records at 0xF3E24 opens `8b 44 24 0c C1 E0 07`, and those bytes are
+        # at raw file offset 0xF3E24. Decoding from image offset 0xF3E24 with the image
+        # starting at 0x1E lands on file offset 0xF3E42, which is `ec 53 56 57`
+        # (`in al,dx; push ebx; push esi; push edi`) and is a different function.
+        #
+        # So for this variant the header is PREPENDED to the address space rather than
+        # stripped from it: file offset and virtual address are the same number, base 0.
+        # This is the same finding as docs/two-frames-of-reference.md in the project
+        # this branch was written for, and it is why an MP cannot be handled by reusing
+        # the P3 image_offset field.
+        self.image_offset = 0
+        self.image = data
+        self.image_size = len(self.image)
+        self.base_offset = 0
+        self.eip = None
+        self.esp = self.image_size + self.min_extra
+        self.segments, self.symbols = [], []
+        self.rtp = b''
 
     def table_end(self, tbl):
         """Where a table of dwords at `tbl`, read with no bound, ends: the first symbol past its
@@ -181,6 +276,12 @@ def main(argv=None):
     for n, v in e.fields():
         if v:
             print('%-16s %#x' % (n, v))
+    if e.kind == 'MP':
+        print('%-16s %s' % ('kind', 'MP'))
+        print('image: %d bytes at file offset %#x, loaded at %#x; entry UNKNOWN (MP carries none)'
+              % (e.image_size, e.image_offset, e.base_offset))
+        print('a seed is required: pass one to i386 / recomp.discover (see --seeds)')
+        return
     print('%-16s %s' % ('run-time params', e.rtp[:16].hex(' ')))
     print('image: %d bytes at file offset %#x, loaded at %#x; entry %#x, stack top %#x'
           % (e.image_size, e.image_offset, e.base_offset, e.eip, e.esp))
