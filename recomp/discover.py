@@ -209,6 +209,16 @@ class Program:
             return None
         if not 0 <= disp - self.base < len(self.img):
             return None
+        # A TABLE IN A NO-CODE RANGE HAS NO CONTENTS TO READ.
+        #
+        # `jmp [edx*4 + 0xE034B]` at 0xE0543 points into a 151-byte zero run. The table is real
+        # and is filled at runtime; the file holds zeros. Reading it from the file returns sixteen
+        # zero dwords, and the descent then takes whatever the next path offers.
+        #
+        # Returning None is the correct answer: the transfer is indirect and unresolved, which is
+        # what `indirect` means and what the runtime is for. It is not a table with no entries.
+        if self.in_no_code(disp):
+            return None
         bound = self._bound(pc, index)
         limit = self.cut.get(pc, 256) if bound is None else bound
         end = self.table_end(disp) if self.table_end and bound is None else None
