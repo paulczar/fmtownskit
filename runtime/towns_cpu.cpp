@@ -22,6 +22,7 @@ uint32_t g_trace_far_all = 0;
 uint32_t g_far_eax = 0;
 uint32_t g_trace_fn_cs = 0, g_trace_fn_lo = 0, g_trace_fn_hi = 0;
 uint32_t g_trace_fn_dump_off = 0, g_trace_fn_dump_len = 0;
+uint32_t g_trace_fn_dump_frame = 0;
 const char* g_trace_fn_dump_path = nullptr;
 
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why) {
@@ -49,7 +50,8 @@ static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
         // Dump the routine's state at the same instant the machine's breakpoint fires, so a comparison of two samples
         // is a comparison of the same moment. Done once: a per-call dump is a file per iteration and no more truth.
         static bool dumped = false;
-        if (!dumped && g_trace_fn_dump_path && g_trace_fn_dump_len && g_towns) {
+        if (!dumped && g_trace_fn_dump_path && g_trace_fn_dump_len && g_towns
+            && g_towns->frame >= g_trace_fn_dump_frame) {
             dumped = true;
             const uint32_t at = c.sbase[5] + c.r[5] + g_trace_fn_dump_off;
             std::vector<uint8_t> buf(g_trace_fn_dump_len);

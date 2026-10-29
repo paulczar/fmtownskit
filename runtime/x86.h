@@ -49,6 +49,7 @@ extern uint32_t g_trace_far_all;          // log that many transfers individuall
 extern uint32_t g_far_eax;                // EAX of the last traced transfer, printed beside a watched write
 extern uint32_t g_trace_fn_cs, g_trace_fn_lo, g_trace_fn_hi;  // log entries into one code range, deduped
 extern uint32_t g_trace_fn_dump_off, g_trace_fn_dump_len;     // dump state at the first traced entry
+extern uint32_t g_trace_fn_dump_frame;                        // ... at or after this frame
 extern const char* g_trace_fn_dump_path;
 extern uint32_t g_watch_max;              // how many hits to print, 64 unless a port raises it
 extern const X86Cpu* g_x86_cur;          // the cpu running, for the caller's address; may be null
