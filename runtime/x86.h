@@ -41,6 +41,7 @@ typedef void (*X86Func)(X86Cpu&);
 // Machine::mem_write alone would miss exactly the writes worth seeing, because writes to mapped RAM
 // never reach it.
 extern uint32_t g_watch_lo, g_watch_hi;   // [lo, hi); armed when lo < hi
+extern uint32_t g_trace_far_sel;          // log far transfers into this selector, once per call site; 0 is off
 extern uint32_t g_watch_max;              // how many hits to print, 64 unless a port raises it
 extern const X86Cpu* g_x86_cur;          // the cpu running, for the caller's address; may be null
 void x86_watch_write(uint32_t a, uint32_t v, int n);

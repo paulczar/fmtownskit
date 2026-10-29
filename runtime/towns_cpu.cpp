@@ -10,8 +10,14 @@
 #include "towns.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
+#include <set>
+#include <utility>
 
 using towns::g_towns;
+
+// The far-selector trace (x86.h). Zero is off. See x86_far for why this exists.
+uint32_t g_trace_far_sel = 0;
 
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why) {
     std::fprintf(stderr, "fault at %04x:%08x: %s (eip %08x, frame %llu)\n", c.sreg[1], site, why, c.eip,
@@ -38,6 +44,18 @@ static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
 void x86_far(X86Cpu& c, uint32_t sel, uint32_t off, bool call, int n, uint32_t next) {
     sel &= 0xFFFF;
     if (n == 2) off &= 0xFFFF;
+    // PATCH, this repository: name the callers of one far selector, once per (caller, target) pair. This is how the
+    // program's use of a system layer becomes visible at all: the calls are not constant-selector `9a` instructions
+    // and no far pointer to the layer is stored in the image, so the caller exists only at run time. Bounded because
+    // a dedup set makes it one line per distinct call site rather than one per call.
+    if (g_trace_far_sel && sel == (g_trace_far_sel & 0xFFFF)) {
+        static std::set<std::pair<uint32_t, uint32_t>> seen;
+        // `next` is the resume address in the caller, and c.sreg[1] is still the caller's segment here.
+        std::pair<uint32_t, uint32_t> key{ ((uint32_t)c.sreg[1] << 16) | (next & 0xFFFF), off };
+        if (seen.insert(key).second)
+            std::fprintf(stderr, "far      %04x:%08x -> %04x:%08x%s eax %08x ebx %08x ecx %08x edx %08x\n", c.sreg[1], next,
+                         sel, off, call ? "" : " (jump)", c.r[0], c.r[3], c.r[1], c.r[2]);
+    }
     if (call) {
         if (n == 4) { push32(c, c.sreg[1]); push32(c, next); }
         else { push16(c, c.sreg[1]); push16(c, next); }
