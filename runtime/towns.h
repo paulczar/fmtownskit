@@ -255,6 +255,13 @@ public:
     void int93(X86Cpu& c, uint32_t eax, uint32_t& ret_eax, uint32_t buf);
     bool cd_paused = false;
     void int90(X86Cpu& c);              // the keyboard BIOS (KYB_*), as FORRBIOS.NSD answers it
+    // PATCH, this repository: the keyboard the kit did not have. Its recordings were taken with no key ever
+    // pressed, so KYB_read (AH=09h) answered "none" unconditionally and a program waiting for a key waited
+    // for ever. The pair is (scan code, ASCII), and the measured contract is in towns_dos.cpp's int90.
+    void press_key(uint8_t scan, uint8_t ascii);
+    struct Key { uint8_t scan, ascii; };
+    std::vector<Key> keys;              // pending presses, served in order by KYB_read
+    unsigned long keys_served = 0;      // how many KYB_read calls took one, for reports
     void int8e(X86Cpu& c);              // KimG (the kanji input manager), as FORRBIOS.NSD answers it
     void intfd(X86Cpu& c);
     // the timer BIOS, int 97h (the ROM's, which FORRBIOS.NSD hands protected-mode calls to; read

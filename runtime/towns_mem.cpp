@@ -10,6 +10,20 @@
 #include <set>
 #include <string>
 
+// The linear write watch (declared in x86.h). Global scope, because the inline store paths in that header
+// reference it from outside any namespace. Off unless a port arms it, and bounded so a program that writes
+// the watched byte in a loop cannot bury the useful first hit.
+uint32_t g_watch_lo = 0, g_watch_hi = 0;
+const X86Cpu* g_x86_cur = nullptr;
+static long g_watch_hits = 0;
+void x86_watch_write(uint32_t a, uint32_t v, int n) {
+    if (++g_watch_hits > 64) return;
+    const X86Cpu* c = g_x86_cur;
+    const uint32_t mask = n == 4 ? 0xFFFFFFFFu : n == 2 ? 0xFFFFu : 0xFFu;
+    std::fprintf(stderr, "watch     %08x = %0*x (%dB) at %04x:%08x\n", a, n * 2, v & mask, n,
+                 c ? (unsigned)c->sreg[1] : 0, c ? c->eip : 0);
+}
+
 namespace towns {
 
 Machine* g_towns;

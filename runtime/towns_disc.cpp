@@ -26,6 +26,10 @@ static long file_size(const std::string& p) {
 }
 
 FILE* Disc::handle(const std::string& path) {
+    // PATCH, this repository. An empty path means a track with no file was reached, which happens when nothing
+    // was opened. fopen would take the empty string happily, so this is not the crash itself, but it turns a
+    // silent nonsense open into a refusal.
+    if (path.empty()) return nullptr;
     for (auto& h : handles_) if (h.first == path) return h.second;
     FILE* f = std::fopen(path.c_str(), "rb");
     if (f) handles_.push_back({path, f});
@@ -39,8 +43,10 @@ bool Disc::open(const std::string& cue, std::string& err) {
     size_t slash = base.find_last_of("/\\");
     base = slash == std::string::npos ? "" : base.substr(0, slash + 1);
     char line[1024];
+    int line_no = 0;
     std::string cur;
     while (std::fgets(line, sizeof line, f)) {
+        ++line_no;
         char* p = line;
         while (*p == ' ' || *p == '\t') ++p;
         if (!std::strncmp(p, "FILE", 4)) {
@@ -68,7 +74,27 @@ bool Disc::open(const std::string& cue, std::string& err) {
             if (n == 0) tracks_.back().index0 = (int32_t)msf(t);
             if (n == 1) tracks_.back().index1 = (int32_t)msf(t);
         } else if (!std::strncmp(p, "PREGAP", 6) || !std::strncmp(p, "POSTGAP", 7)) {
-            err = "a gap not in the files is not read here"; std::fclose(f); return false;
+            // PATCH, this repository. The old message was "a gap not in the files is not read here": correct and
+            // unhelpful, because it read like a missing feature. The problem is that the cue does not say enough
+            // to decide, and guessing has a specific cost, so the message now names the line, the track, the gap
+            // and the ambiguity. Seen on this disc's own cue: one FILE, eight tracks, `PREGAP 00:02:00` on track
+            // 2, and every INDEX 01 still relative to that one file. Whether the rip already contains those 150
+            // sectors is a property of the rip, not of the cue, and getting it wrong shifts every later track by
+            // 150 sectors without an error. A CloneCD .ccd states it, and a one-track cue for the data track does
+            // not care, which are the two answers to give a caller.
+            bool is_pre = p[1] == 'R';
+            char gap[32] = {};
+            std::sscanf(p + (is_pre ? 6 : 7), "%31s", gap);
+            char why[512];
+            std::snprintf(why, sizeof why,
+                          "%s:%d: %s %s on track %d cannot be decided from the cue. The gap is not in the file that "
+                          "the track's INDEX 01 counts from, but whether the rip already contains it is a property "
+                          "of the rip and the cue does not say, so accepting it would shift every later track by "
+                          "%s and read the wrong sectors silently. Use the .ccd, which states the layout, or a "
+                          "one-track cue for the data track if only that is wanted.",
+                          cue.c_str(), line_no, is_pre ? "PREGAP" : "POSTGAP", gap,
+                          tracks_.empty() ? 0 : tracks_.back().number, gap);
+            err = why; std::fclose(f); return false;
         }
     }
     std::fclose(f);
@@ -105,6 +131,11 @@ bool Disc::open(const std::string& cue, std::string& err) {
 }
 
 bool Disc::read_data(uint32_t n, uint8_t* out) {
+    // PATCH, this repository. `data_` is null until `open()` finds a data track, and this dereferenced it
+    // unconditionally, so a program that opened a file without a disc mounted took a null pointer instead of
+    // getting a DOS error. That is what killed the port's first 600-frame run inside Disc::handle, with a
+    // backtrace pointing at fopen because the null Track's path was garbage.
+    if (!data_) return false;
     const Track& t = *data_;
     FILE* f = handle(t.path);
     if (!f || n >= t.sectors) return false;
@@ -174,6 +205,9 @@ static std::string upper(std::string s) {
 void Disc::index() {
     if (!walked_) {
         walked_ = true;
+        // PATCH, this repository: with no disc opened there is nothing to walk, and find() should answer
+        // "no such file" so the DOS layer can return an error rather than crash. See read_data.
+        if (!data_) return;
         uint8_t pvd[2048];
         for (uint32_t n = 16; n < 32 && read_data(n, pvd); ++n) {
             if (std::memcmp(pvd + 1, "CD001", 5)) break;

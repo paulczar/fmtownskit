@@ -89,6 +89,22 @@ A dump is MAME's CPU state and physical RAM (`state.txt`, `ram.bin`) at a
 moment the CPU is in protected mode with paging on; a port's oracle writes
 it with a Lua script.
 
+## A skill for an agent
+
+`.agents/skills/fmtownskit/` packages the reading as an Agent Skills skill.
+`SKILL.md` holds the five facts true of every session (where the modules
+have to run from, which interpreter has capstone and which unicorn, that
+`mp-support` is a branch rather than a release, what belongs in the port
+instead of here, and that a number without a command is a guess) and a
+table of which reference answers which question. The eight references,
+one per job, cover the disc, the executable, the code map, the
+recompiler, the decoders, the machine, the runtime and the shape of a port.
+
+Pi and `npx skills` both find it, from this clone and from a port that
+carries the kit as a submodule. It is a digest and not a second manual:
+where a reference and a module's docstring disagree, the docstring is
+right and the skill is the thing to fix.
+
 ## What a Towns CD is
 
 Worth writing down in one place, because every port starts here. Checked on
@@ -122,7 +138,7 @@ one disc so far (see *Checks*):
 
 | Layer | Question it answers | Now | Next |
 |---|---|---|---|
-| 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3, its symbol table, a P3 bound behind an MZ stub), `tbiosld` (a TBIOS of Phar Lap "MQ" modules, laid out and linked as TBIOSLD.SYS does) | MZ executables and RUN386's own loader; floppy images (.hdm) for the discs that come with a user disk |
+| 1. Recognise | What is on this disc? | `disc` (cue sheets, raw and cooked tracks, ISO 9660, the IPL record, the tracks' positions and pregaps), `exp` (Phar Lap P3 and the "MP" 16-bit-header form, its symbol table, a P3 bound behind an MZ stub), `tbiosld` (a TBIOS of Phar Lap "MQ" modules, laid out and linked as TBIOSLD.SYS does) | MZ executables and RUN386's own loader; floppy images (.hdm) for the discs that come with a user disk |
 | 2. Extract | Turn standard formats into standard files | `disc --extract`, `disc --wav` | the TBIOS-level formats games share (sprite patterns, the sound BIOS's data), when a second game confirms them |
 | 3. Map code | What does the code do, where? | `x86map` (descent, extents, every `int` with AH/AL, every port, every selector loaded, far calls through TBIOS's table, indirect transfers), `mamedump` (a running machine: GDT, LDT, paging, bytes found) | the TBIOS's own functions named by module and AH |
 | 4. Translate | Turn 386 code into C++ | `i386` (the 386's integer instruction set exactly: 16- and 32-bit operand and address sizes, segment overrides, REP/LOCK, ModRM/SIB, the 0F map; later CPUs' instructions refused with a reason; the x87's escapes as a 386 with no coprocessor runs them), `i386emu` (an interpreter: the reference, its undefined flags listed), `recomp.discover` (functions and their bodies, jump tables bounded by the guard that really guards them -- or by `setcc`, `and` --, tables with no bound read until an entry's code conflicts or is refused, or to the next symbol, the descent rerun until clean; a program's symbols as seeds), `recomp.emit` and `python -m fmtownskit.recomp` (C++ per function, a module per program keyed by its code selector, calls as C++ calls with the return checked and unwound -- a call made by hand, `push RET; jmp F`, too --, jump tables as switches on the entry read, the 386's clocks a block at a time), `recomp.selftest` (the interpreter records, the C++ replays; the optest: every instruction form, one-instruction functions) | flags only where read; the clocks held against the oracle |
@@ -147,7 +163,7 @@ one disc so far (see *Checks*):
 | Module | Checked by |
 |---|---|
 | `disc` | The Queen of Duellist (Rev A; Redump's split dump, 10 tracks): every track's file matches the CRC32 MAME's software list gives, and the CHD made from the sheet has its SHA-1. The data track: ISO 9660, 2,932 blocks of 6,750 sectors (the rest zero), 167 files in 4 directories, extracted byte for byte as a separate reader does; nine CD-DA tracks whose pregaps (345 to 815 sectors) hold audio in seven of them |
-| `exp` | the same disc's `DUEL.EXP`: a level-1 P3 image of 73,495 bytes at 0x200, entry 0xA7F0, stack top 0x13F20, no relocations. 4D Driving's `4DDFMT.EXP`: 290,132 bytes, entry 0x340A4 (`_mwINIT`), and its SYM1 table read to the last byte of both sizes: 2 segments, 2,047 symbols. On both, image + the minimum "extra" = the initial ESP. ABEL's three programs, each behind the same 0x850-byte MZ stub, the P3 where the MZ header's page count ends: `ABEL.EXE` 648,423 bytes of image (entry 0x40D20), `OPNG.EXE` 299,936 (0x27D14), `ENDG.EXE` 170,187 (0x11444), image + minimum = ESP on all three; the P3 read from behind the stub the same, byte for byte, as cut out by hand |
+| `exp` | the same disc's `DUEL.EXP`: a level-1 P3 image of 73,495 bytes at 0x200, entry 0xA7F0, stack top 0x13F20, no relocations. 4D Driving's `4DDFMT.EXP`: 290,132 bytes, entry 0x340A4 (`_mwINIT`), and its SYM1 table read to the last byte of both sizes: 2 segments, 2,047 symbols. On both, image + the minimum "extra" = the initial ESP. ABEL's three programs, each behind the same 0x850-byte MZ stub, the P3 where the MZ header's page count ends: `ABEL.EXE` 648,423 bytes of image (entry 0x40D20), `OPNG.EXE` 299,936 (0x27D14), `ENDG.EXE` 170,187 (0x11444), image + minimum = ESP on all three; the P3 read from behind the stub the same, byte for byte, as cut out by hand. Ultima II's `ENCHANT.EXP`: the "MP" form, a 30-byte header whose `(pages - 1) * 512 + lastPage` reproduces its 1,072,398 bytes exactly, the image the whole file at base 0 with no entry point at all, so a seed has to come from outside it; read through the P3 table instead, the relocation offset comes out 0x1A0020, past the end of the file |
 | `tbiosld` | ABEL's TBIOS at OPNG's first instruction (session 2): the composed image and memory the same, **0 bytes differing**; at ABEL's, 365 bytes in the sound and int 04dh modules' work areas (OPNG's). Session 1: the eight modules of its TBIOS.INI composed from the disc's files (90,464 bytes: TBIOSTOP at 0, the graphic module at 0x300 ... the font module to 0x16160) against the TBIOS in the oracle's memory 66 s into the game (`mamedump --read 0x100000:0x17000`): the entry table the same but for slot 0x98 (the game's), and the 449 other bytes that differ all lie between a module's header and its first code -- its work areas, filled as it runs |
 | `towns` | the memory maps, ports, IRQs and machine ids as MAME's fmtowns driver has them; confirmed by a game's code: the pad ports 0x4D0/0x4D2/0x4D6, the CRTC's 0x440/0x442/0x443, the sprite controller's 0x450/0x452, the sound status at 0x4E9 and IRQ13 as int 4Dh (slave PIC at 0x48) |
 | `towns.PROFILES` | 4D Driving's dumps on MAME's `fmtowns` with 2 and 4 MB and `fmtmarty`: the program's segment at 0x200000 with 2 MB but **0x408000 with 4 MB** (physical 0x49000 both), its limit when it asks for all memory, selector 0x40 short of the RAM by the 32 KB a driver keeps; nothing else in the tables differs between 2 and 4 MB |
@@ -167,6 +183,10 @@ one disc so far (see *Checks*):
   Towns with the disc's TBIOS, its RAM and RUN386's placing a profile; the
   Marty's own TBIOS (its ROM's extension: a TV zoom, the pad as a mouse) is
   not run.
+* **The "MP" form is read from one binary.** `ENCHANT.EXP` is the only one
+  measured: the size arithmetic, base 0 and the absence of an entry point
+  hold there. Nothing yet shows an MP that loads anywhere else, so a port
+  that meets one has to say how it knows.
 * **Profiles are read, not derived**: how RUN386 places a program by RAM
   size and drivers is a table of what the dumps showed, not RUN386's rule.
 * **RUN386's selectors** are read from two machines running, not from

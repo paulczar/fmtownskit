@@ -353,7 +353,13 @@ void Machine::out8(uint32_t port, uint8_t d) {
     default:
         if (port >= 0xFD98 && port <= 0xFD9F) { v.degipal[port - 0xFD98] = d; v.dpmd = true; return; }
         if (port >= 0x3000 && port < 0x5000) { unknown("CMOS write %04x", port); return; }
-        unknown("out %04x", port);
+        // PATCH, this repository: name the instruction as well as the port. "out 0e51" says a port nobody has
+        // implemented was written and nothing about which chip was being programmed, and the value is the other
+        // half of that question. A port number with no caller is a lead that has to be re-found by watching.
+        if (g_x86_cur)
+            unknown("out %04x = %x (at %04x:%08x)", port, d, (unsigned)g_x86_cur->sreg[1], g_x86_cur->eip);
+        else
+            unknown("out %04x = %x", port, d);
     }
 }
 

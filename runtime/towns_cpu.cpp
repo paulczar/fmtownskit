@@ -158,6 +158,34 @@ void x86_int(X86Cpu& c, int n, uint32_t next) {
     towns::Machine& m = *g_towns;
     m.advance(m.machine_time(c.clocks));
     c.eip = next;
+    // PATCH, this repository. This program patches its own `int` instruction, so the vector in the
+    // recompiled module is not the vector the program executes.
+    //
+    // The routine named "int86" at guest 0x1023f6 is:
+    //
+    //   1023fc  8a 45 08        mov al, [ebp+8]        the interrupt number is the first argument
+    //   1023ff  a2 1b241000     mov [0x10241b], al     written into the next instruction
+    //   102418  eb 00           jmp $+2
+    //   10241a  cd 00           int 0                  which the loader left as CD 00
+    //
+    // Measured live, and it settles what is happening: at program entry the bytes at DS:0x10241A are
+    // `CD 00`, and at the moment the call is made they are `CD 93`, which Tsugaru decodes as INT 93H.
+    // The other eleven `CD 00` in the image are never patched because they are never executed, and a
+    // scan for a `mov [mem], 0x93` finds nothing at all, because the store is the one above and its
+    // value comes from a register.
+    //
+    // A recompiled module compiles the `int` from the bytes on disk, so it traps vector 0 forever. The
+    // vector is therefore taken from the code immediately before the instruction, which is where the
+    // program put it. `next` is the address after the two-byte instruction, so the vector is at
+    // next - 1.
+    if (n == 0) {
+        int live = (int)rd8(c.sbase[1] + (next - 1));
+        if (m.trace_int)
+            std::fprintf(stderr, "  int 0 at %08x: vector byte %02x, cs base %08x, ds base %08x, ds byte %02x\n",
+                         next - 2, (unsigned)live, (unsigned)c.sbase[1], (unsigned)c.sbase[3],
+                         (unsigned)rd8(c.sbase[3] + 0x10241bu));
+        if (live != 0) n = live;
+    }
     switch (n) {
     case 0x21: m.int21(c); break;
     case 0x93: {

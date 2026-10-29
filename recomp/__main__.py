@@ -164,14 +164,32 @@ def main(argv=None):
     ap.add_argument('--slice', metavar='LO-HI', help="vectors only for the functions in LO-HI (hex), to "
                     "selftest/<name>_<lo>-<hi>.txt")
     ap.add_argument('--jobs', type=int, default=1, help='processes making vectors')
-    ap.add_argument('--no-code', action='append', default=[], metavar='LO:HI',
-                    help='a half-open range where code cannot be, hex, repeatable, applied to '
-                         'every module; zeros decode as instructions without error, so a '
-                         'descent into zero fill otherwise succeeds silently and endlessly')
+    ap.add_argument('--no-code', action='append', default=[], metavar='[NAME=]LO:HI',
+                    help='a half-open range where code cannot be, hex, repeatable. A plain LO:HI applies to '
+                         'every module, and NAME=LO:HI applies to the module called NAME. Zeros decode as '
+                         'instructions without error, so a descent into zero fill otherwise succeeds '
+                         'silently and endlessly')
     a = ap.parse_args(argv)
     os.makedirs(os.path.join(a.out, 'selftest'), exist_ok=True)
     from .. import exp as expmod
-    nocode = expmod.parse_no_code(a.no_code)
+    # --no-code is per module as well as global.
+    #
+    # WHY. One list applied to every module is wrong as soon as a build has two modules made from
+    # different images, because the ranges are derived from one image's zero fill. Measured on the FM
+    # Towns Ultima II port: ENCHANT's ranges, applied to TBIOS, refused its real code at 0xb91-0xe1c,
+    # which is padding in the game and ordinary TBIOS code. The workaround was two recompilations
+    # merged by hand, which is exactly what a parameter exists to avoid.
+    nocode_all = expmod.parse_no_code([s for s in a.no_code if '=' not in s])
+    per_module = {}
+    for spec in a.no_code:
+        if '=' not in spec:
+            continue
+        mname, _, rng = spec.partition('=')
+        per_module.setdefault(mname, []).append(rng)
+    nocode_mod = {k: expmod.parse_no_code(v) for k, v in per_module.items()}
+
+    def nocode_for(name):
+        return list(nocode_all) + list(nocode_mod.get(name, ()))
     mods = []
     for spec in a.exp:
         name, path, cs, symend, seeds = parse(spec, False)
@@ -188,13 +206,19 @@ def main(argv=None):
             entry, seeds = seeds[0], seeds[1:]
         prog = discover.Program(e.image, e.base_offset, [entry] + seeds, name,
                                 table_end=e.table_end if e.symbols else None, names=e.names(),
-                                no_code=nocode)
+                                no_code=nocode_for(name))
         mods.append(Module(name, prog, cs, e.image, e.base_offset))
     for spec in a.raw:
         name, path, cs, far, seeds = parse(spec, True)
         data = open(path, 'rb').read()
-        prog = discover.Program(data, 0, seeds, name, far, no_code=nocode)
+        prog = discover.Program(data, 0, seeds, name, far, no_code=nocode_for(name))
         mods.append(Module(name, prog, cs, data, 0))
+    # A --no-code that names a module this build does not have would silently do nothing, which is
+    # indistinguishable from a range that was not needed. Say so instead.
+    unknown = sorted(set(nocode_mod) - {m.name for m in mods})
+    if unknown:
+        raise SystemExit('--no-code names module(s) %s; this build has %s'
+                         % (', '.join(unknown), ', '.join(sorted(m.name for m in mods))))
     if a.optest:
         image, entries = ST.optest_image([m.prog for m in mods])
         prog = discover.Program(image, ST.OPTEST_BASE, entries, 'optest')

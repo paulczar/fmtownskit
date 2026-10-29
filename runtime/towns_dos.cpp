@@ -35,6 +35,22 @@ static int new_handle(Machine& m) {
 }
 
 // "Q:\AGUMIX.PX", "A:dueltwn.sav", "DUEL.EXP": the disc's, or a host file in save_dir.
+// PATCH, this repository. Drive A: is a real floppy image, served by the program that links this runtime.
+//
+// WHY. Ultima II probes A:\ROSTER1.UT2 at start-up with int 21h AX=4300 before it draws anything. With no A:
+// drive the probe failed, the program took its "insert the save disk" path, printed message 0x1930 and waited
+// for a key, and the port sat there for 24,000 frames looking healthy. The machine mounts the same image, so the
+// honest fix is to read it rather than to answer the query with a plausible lie.
+//
+// The two hooks are defined in port/main.cpp over port/floppy.h, which is a FAT12 reader. Returning false means
+// "this runtime has no floppy", and every other drive behaves exactly as before.
+bool fm_floppy_attrs(const std::string& path, uint32_t& attrib, uint32_t& size);
+bool fm_floppy_read(const std::string& path, std::vector<uint8_t>& out);
+
+static bool on_floppy(const std::string& name) {
+    return name.size() >= 2 && name[1] == ':' && std::toupper((unsigned char)name[0]) == 'A';
+}
+
 static bool on_disc(Machine& m, const std::string& name, std::string& path) {
     char drive = m.drive;
     path = name;
@@ -308,6 +324,21 @@ void Machine::int21(X86Cpu& c) {
     }
     case 0x3C: case 0x3D: {                         // create, open
         std::string name = cstr(*this, ds + c.r[2]), path;
+        if (on_floppy(name)) {                      // PATCH, this repository: drive A: is the floppy image
+            int fh = new_handle(*this);
+            if (fh < 0) { set_cf(c, true); s16(c, 0, 4); return; }
+            Handle& hf = handles[fh];
+            if (ah == 0x3C || !fm_floppy_read(name, hf.data)) {
+                if (trace_int) std::fprintf(stderr, "  %s: not on the floppy\n", name.c_str());
+                set_cf(c, true); s16(c, 0, ah == 0x3C ? 5 : 2); return;
+            }
+            hf.host = false; hf.used = true; hf.pos = 0;
+            if (trace_int) std::fprintf(stderr, "  %s -> handle %d (floppy, %u bytes)\n", name.c_str(), fh,
+                                        (unsigned)hf.data.size());
+            s16(c, 0, (uint32_t)fh);
+            set_cf(c, false);
+            return;
+        }
         int h = new_handle(*this);
         if (h < 0) { set_cf(c, true); s16(c, 0, 4); return; }
         Handle& hd = handles[h];
@@ -408,6 +439,39 @@ void Machine::int21(X86Cpu& c) {
         set_cf(c, false);
         return;
     }
+    case 0x43: {                                    // get file attributes into CX, from DS:EDX. The
+        if (al != 0x00) return;                     // set form (AL=1) changes nothing on a CD, which
+        DiscFile f;                                 // is read only anyway
+        std::string want = cstr(*this, ds + c.r[2]);
+        if (on_floppy(want)) {                      // PATCH, this repository: drive A: is the floppy image
+            uint32_t fattrib = 0, fsize = 0;
+            if (!fm_floppy_attrs(want, fattrib, fsize)) {
+                if (trace_int) std::fprintf(stderr, "  attributes: %s -> not on the floppy\n", want.c_str());
+                c.r[0] = (c.r[0] & 0xFFFF0000u) | 2u;
+                set_cf(c, true);
+                return;
+            }
+            if (trace_int) std::fprintf(stderr, "  attributes: %s -> floppy, attr %02x, %u bytes\n",
+                                        want.c_str(), fattrib, fsize);
+            c.r[1] = fattrib;
+            c.r[0] &= 0xFFFF0000u;
+            set_cf(c, false);
+            return;
+        }
+        if (!disc.find(want, f)) {
+            // This is the check that decides whether the game shows its "press a key" error path, so a miss
+            // here has to be visible rather than silent.
+            if (trace_int) std::fprintf(stderr, "  attributes: %s -> not found\n", want.c_str());
+            c.r[0] = (c.r[0] & 0xFFFF0000u) | 2u;   // file not found, DOS error 2
+            set_cf(c, true);
+            return;
+        }
+        if (trace_int) std::fprintf(stderr, "  attributes: %s -> found%s\n", want.c_str(), f.dir ? " (dir)" : "");
+        c.r[1] = f.dir ? 0x10u : 0x20u;             // a directory, or an ordinary archive file
+        c.r[0] &= 0xFFFF0000u;
+        set_cf(c, false);
+        return;
+    }
     case 0xFF:                                      // not DOS's (an extender's test, DX=78h):
         unknown("int 21h AX=%04X DX=%04X: none (as on the Towns)", c.r[0] & 0xFFFF, c.r[2] & 0xFFFF);
         return;                                     // RUN386 leaves every register as it was
@@ -451,6 +515,34 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
     if (trace_int) std::fprintf(stderr, "int 93h AX=%04X CX=%04X BX=%04X buffer %05x\n", eax & 0xFFFF, c.r[1] & 0xFFFF,
                                 c.r[3] & 0xFFFF, buf);
     if (al != 0xC0) {
+        // PATCH, this repository. AL is not always the CD-DA interface. The program's CD probe calls
+        // int86(0x93) at guest 0xe2445 with AX=0x0220, then reads the returned AH from its outregs at
+        // DS:0x7a635 and branches: AH==2 returns -1, otherwise two bits at DS:0x7a640 are consulted and
+        // a second call goes out with AH=0x07. That is read off the code at guest 0xe2440-0xe24d7.
+        //
+        // The returns are MEASURED, not chosen. Breakpoint at 000C:0E244D, the instruction after the
+        // first call, with the outregs struct the program passes read at DS:0x7a634:
+        //
+        //   in AX=0x0220   out EAX=0x00000020  EBX=0  ECX=0  EDX=4
+        //   in AX=0x0720   out EAX=0x00000000  EBX=1  ECX=1  EDX=0
+        //
+        // The second row was read from the same struct after start-up had finished, since the second
+        // call is the last one to write it. Both are one sample from one machine.
+        if (al == 0x20) {
+            if (ah == 0x02) {
+                ret = 0x20u;
+                c.r[3] = 0;
+                c.r[1] = 0;
+                c.r[2] = 4;
+            } else {
+                ret = 0;
+                c.r[3] = 1;
+                c.r[1] = 1;
+                c.r[2] = 0;
+            }
+            set_cf(c, false);
+            return;
+        }
         char why[64];
         std::snprintf(why, sizeof why, "int 93h AX=%04Xh: not the CD", eax & 0xFFFF);
         x86_fault(c, c.eip, why);
@@ -522,6 +614,11 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
     x86_fault(c, c.eip, why);
 }
 
+// The keyboard, as a port drives it. One queue, served in order, so a sequence of presses reads back in the order
+// the program asked for them. Nothing else consumes it: this is not a keyboard driver, it is the minimum that lets
+// a program waiting for a key proceed, and the measured contract is in int90's case 0x09.
+void Machine::press_key(uint8_t scan, uint8_t ascii) { keys.push_back(Key{scan, ascii}); }
+
 // The keyboard BIOS, int 90h, as FORRBIOS.NSD answers it in protected mode (the program
 // pushes "DOSX" "BIOS" before each call): read on the oracle (tools/oracle.py --trace-calls at
 // each int and the instruction after it) with no key ever pressed -- AH 0 for every function,
@@ -531,11 +628,33 @@ void Machine::int90(X86Cpu& c) {
     uint8_t ah = (c.r[0] >> 8) & 0xFF;
     if (trace_int) std::fprintf(stderr, "int 90h AX=%04X EBX=%08X ECX=%08X EDX=%08X\n", c.r[0] & 0xFFFF, c.r[3], c.r[1], c.r[2]);
     switch (ah) {
+    // PATCH, this repository. KYB_lock (AH=04) was not in this kit's recordings, because they were taken
+    // with no key ever pressed. Measured on the live machine with the emulator console at 000C:0052:
+    // EAX goes in as 0x00000400 (AH the function, AL the lock flag from [EBP+8]) and comes back as
+    // 0x00000000. The stub there is `CD 90`, `MOVZX EAX,AH`, `LEAVE`, `RET`, so the result is in AH, and
+    // the `c.r[0] &= 0xFFFF00FF` at the end of this function already delivers it by zeroing AH. One call
+    // measured, with AL=0. The handler is TBIOS's own, reached through CS=0008 at linear 0x5C12E.
+    case 0x04:
     case 0x00: case 0x01: case 0x02: case 0x05: case 0x06:   // init, buffer, code, click, clear
         break;
-    case 0x09:                                      // read a key: none
-        s16(c, 2, 0xFFFF);
-        s16(c, 3, 0xFF00);
+    case 0x09:                                      // read a key
+        // PATCH, this repository. The kit had no keyboard, so this answered "none" for ever and a program
+        // polling for input never moved. Measured on the live machine at 000C:000000B6, the instruction after
+        // the `int 90h` in the KYB_read wrapper, with the key 'a' pressed at a break:
+        //     BX = 0x1E00   DX = 0x0061     (the scan code in BX's high byte, the ASCII in DX)
+        // and with no key, BX = 0xFF00 and DX = 0xFFFF, which is what the recordings showed. ENCHANT tests
+        // `(BX & 0xFF00) == 0xFF00` for "none", then indexes a 114-entry table with `(BX >> 8) - 1`, so it reads
+        // the SCAN CODE and DX is a convenience.
+        if (!keys.empty()) {
+            Key k = keys.front();
+            keys.erase(keys.begin());
+            ++keys_served;
+            s16(c, 3, (uint32_t)k.scan << 8);
+            s16(c, 2, k.ascii);
+        } else {
+            s16(c, 2, 0xFFFF);
+            s16(c, 3, 0xFF00);
+        }
         break;
     case 0x0A: {                                    // the key matrix
         static const uint8_t none[16] = {};

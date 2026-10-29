@@ -34,6 +34,20 @@ struct X86Cpu {
 };
 
 typedef void (*X86Func)(X86Cpu&);
+
+// A linear write watch, for differential work against the real machine: one range, off unless armed.
+// The fast paths below compare against it on every store, which is one predictable branch when unarmed
+// and is the price of being able to answer "does this program ever write that byte" at all. A watch in
+// Machine::mem_write alone would miss exactly the writes worth seeing, because writes to mapped RAM
+// never reach it.
+extern uint32_t g_watch_lo, g_watch_hi;   // [lo, hi); armed when lo < hi
+extern const X86Cpu* g_x86_cur;          // the cpu running, for the caller's address; may be null
+void x86_watch_write(uint32_t a, uint32_t v, int n);
+#define X86_WATCH(a, v, n)                                                                         \
+    do {                                                                                           \
+        if (X86_UNLIKELY(g_watch_lo != g_watch_hi && (uint32_t)((a) - g_watch_lo) < g_watch_hi - g_watch_lo)) \
+            x86_watch_write((a), (v), (n));                                                        \
+    } while (0)
 struct X86FuncEntry { uint32_t addr; X86Func fn; };
 struct X86Module {
     const char* name;
@@ -65,15 +79,18 @@ static inline uint32_t rd32(uint32_t a) {
     uint32_t v; std::memcpy(&v, p + (a & 0xFFF), 4); return v;
 }
 static inline void wr8(uint32_t a, uint32_t v) {
+    X86_WATCH(a, v, 1);
     uint8_t* p = g_x86_page[a >> 12];
     if (X86_UNLIKELY(!p)) x86_mem_write(a, 1, v); else p[a & 0xFFF] = (uint8_t)v;
 }
 static inline void wr16(uint32_t a, uint32_t v) {
+    X86_WATCH(a, v, 2);
     uint8_t* p = g_x86_page[a >> 12];
     if (X86_UNLIKELY(!p || (a & 0xFFF) > 0xFFE)) { x86_mem_write(a, 2, v); return; }
     uint16_t w = (uint16_t)v; std::memcpy(p + (a & 0xFFF), &w, 2);
 }
 static inline void wr32(uint32_t a, uint32_t v) {
+    X86_WATCH(a, v, 4);
     uint8_t* p = g_x86_page[a >> 12];
     if (X86_UNLIKELY(!p || (a & 0xFFF) > 0xFFC)) { x86_mem_write(a, 4, v); return; }
     std::memcpy(p + (a & 0xFFF), &v, 4);

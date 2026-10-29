@@ -17,6 +17,7 @@
 //             right buttons), the host's pointer hidden over the window
 #pragma once
 #include "towns.h"
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -34,6 +35,11 @@ public:
     ~SdlHost();
     bool open(const SdlOptions& o, std::string& err);
     void vsync(Machine& m);         // throws Stop{0} when the window is closed
+    // PATCH, this repository: the host's keystrokes as the Towns' own (scan code, ASCII), so a program that
+    // reads the keyboard through int 90h can be typed into. The front-end otherwise maps keys only to the pad,
+    // which is right for the games it was built for and useless for a program waiting on KYB_read. Unset means
+    // no callback and the behaviour is exactly as before.
+    std::function<void(uint8_t scan, uint8_t ascii)> on_key;
 private:
     struct Impl;
     std::unique_ptr<Impl> p_;

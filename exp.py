@@ -200,18 +200,26 @@ class Exp:
         return [(n, getattr(self, n)) for n, _, _ in table]
 
     def _read_mp(self, data):
-        """The "MP" form: 30-byte header, image is everything after it, no entry point.
+        """The "MP" form: 30-byte header, image is everything after it, and an entry at 0x14.
 
-        THE ENTRY POINT IS DELIBERATELY None. MP has no EIP field. The u16 at 0x18
-        reads as 30 on ENCHANT.EXP, which is the header size and is consistent with
-        where the zero padding begins, but reading it as an entry would start a walk
-        at address 0x1E, inside the header, and produce a confidently wrong map.
-        Callers must supply a seed. `i386.py` already does this for the `--raw` and
-        `--base`/`--far-table` paths, which is the same situation.
+        THE ENTRY POINT IS THE DWORD AT 0x14, AND THE IMAGE BEGINS AT FILE 0x200.
 
-        The base is 0 for the same reason `docs/` gives: every absolute operand in
-        ENCHANT.EXP is below 0x110000, which is only possible if the image loads at
-        0 rather than the 0x100000 that a 16-bit-header MP conventionally suggests.
+        An earlier version of this docstring said MP had no EIP field, that the u16 at 0x18 was the header
+        size and so the field at 0x14 could not be an entry. The u16 at 0x18 is 0x1E and it is the header
+        size, which is why that looked right, but the entry is a separate dword at 0x14 and it is an ADDRESS
+        in the loaded image, not a file offset.
+
+        Measured on this branch's ENCHANT.EXP: dword@0x14 is 0x101A20; at file offset 0x101A20 the bytes are
+        `02 03 D1 03`, which is not an instruction boundary; at file offset 0x101C20 they are `EB 56`,
+        `JMP 00101A78`, and a breakpoint there is delivered by the loader's IRETD at 0008:3DD3. The header
+        itself is 0x1E bytes and the rest of the first 0x200 is zero, so the image starts at 0x200 because
+        that is where the loader maps it, not because a field says so. File length agrees with the header's
+        page count either way: pages*512 - 512 + last_page is 1072398.
+
+        So: image_offset 0x200, image is the file after it, and the entry is the 0x14 field unchanged. Before
+        this, the reader kept the whole file as the image with base 0 and reported no entry, which walked
+        from file offset 0x101C20 as if it were address 0x101C20, so every immediate in the code missed its
+        target by 0x200. That walk gave 498,320 instructions and 284,785 conflicts.
         """
         self.kind = 'MP'
         self.data = data
@@ -249,11 +257,19 @@ class Exp:
         # This is the same finding as docs/two-frames-of-reference.md in the project
         # this branch was written for, and it is why an MP cannot be handled by reusing
         # the P3 image_offset field.
-        self.image_offset = 0
-        self.image = data
+        # The image begins where the loader maps it, 0x200 into the file, and the header's addresses are
+        # offsets into that image. The first 0x1E bytes are the header and the rest of the first 0x200 is
+        # zero, so there is no field to read this from: it is the load convention, measured as described in
+        # the docstring.
+        if len(data) <= 0x200:
+            raise ValueError('MP: %d bytes is too short to hold an image at 0x200' % len(data))
+        self.image_offset = 0x200
+        self.image = data[0x200:]
         self.image_size = len(self.image)
         self.base_offset = 0
-        self.eip = None
+        # The entry, unchanged: it is already an address in the image.
+        entry = struct.unpack_from('<I', data, 0x14)[0]
+        self.eip = entry if 0 < entry < len(self.image) else None
         self.esp = self.image_size + self.min_extra
         self.segments, self.symbols = [], []
         self.rtp = b''
