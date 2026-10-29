@@ -20,6 +20,7 @@ using towns::g_towns;
 uint32_t g_trace_far_sel = 0;
 uint32_t g_trace_far_all = 0;
 uint32_t g_far_eax = 0;
+uint32_t g_trace_fn_cs = 0, g_trace_fn_lo = 0, g_trace_fn_hi = 0;
 
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why) {
     std::fprintf(stderr, "fault at %04x:%08x: %s (eip %08x, frame %llu)\n", c.sreg[1], site, why, c.eip,
@@ -33,6 +34,17 @@ uint32_t g_far_eax = 0;
 }
 
 static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
+    // PATCH, this repository: log every entry into one code-selector address range, deduped. This is how "does the
+    // program reach this routine at all" becomes answerable in a port whose functions are C++ calls with no
+    // instruction fetches to watch. Set from the port's U2_TRACE_FN=<cs>:<lo>:<hi>.
+    if (g_trace_fn_lo < g_trace_fn_hi && (cs & 0xFFFC) == (g_trace_fn_cs & 0xFFFC) && off >= g_trace_fn_lo
+        && off <= g_trace_fn_hi) {
+        static long entries = 0;
+        if (++entries <= (long)g_watch_max)
+            std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x\n",
+                         cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
+                         c.r[6], c.r[7], c.r[5]);
+    }
     X86Func f = x86_lookup_cs(cs & 0xFFFC, off);
     if (!f) f = x86_lookup_cs(cs, off);
     if (!f) {
