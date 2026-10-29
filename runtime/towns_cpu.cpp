@@ -91,6 +91,14 @@ void x86_far(X86Cpu& c, uint32_t sel, uint32_t off, bool call, int n, uint32_t n
     x86_load_seg(c, 1, sel);
     X86Func f = find(c, (uint16_t)sel, off, next);
     f(c);
+    // The return values are the other half of the contract: a program that asks the system layer for a cursor or a
+    // metric and gets a different answer lays itself out differently, with no call missing and no fault raised.
+    if (g_trace_far_sel && sel == (g_trace_far_sel & 0xFFFF) && g_trace_far_all) {
+        static long rets = 0;
+        if (++rets <= (long)g_trace_far_all)
+            std::fprintf(stderr, "ret       %04x:%08x <- %04x eax %08x ebx %08x ecx %08x edx %08x f%llu\n", old, next, sel,
+                         c.r[0], c.r[3], c.r[1], c.r[2], (unsigned long long)(g_towns ? g_towns->frame : 0));
+    }
     if (!call) return;
     // a far call returns through retf, which set CS and EIP; the caller checks EIP
     (void)old;
