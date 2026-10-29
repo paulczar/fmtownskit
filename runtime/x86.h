@@ -41,6 +41,8 @@ typedef void (*X86Func)(X86Cpu&);
 // Machine::mem_write alone would miss exactly the writes worth seeing, because writes to mapped RAM
 // never reach it.
 extern uint32_t g_watch_lo, g_watch_hi;   // [lo, hi); armed when lo < hi
+extern uint32_t g_rdw_lo, g_rdw_hi;       // [lo, hi) read counter; armed when lo < hi
+extern unsigned long long g_rdw_hits;     // how many reads landed in that range
 extern uint32_t g_trace_far_sel;          // log far transfers into this selector, once per call site; 0 is off
 extern uint32_t g_trace_far_all;          // log that many transfers individually rather than once per site; 0 is off
 extern uint32_t g_far_eax;                // EAX of the last traced transfer, printed beside a watched write
@@ -69,15 +71,18 @@ uint32_t x86_mem_read(uint32_t a, int n);         // a page with no host memory,
 void     x86_mem_write(uint32_t a, int n, uint32_t v);
 
 static inline uint32_t rd8(uint32_t a) {
+    if (X86_UNLIKELY(g_rdw_lo != g_rdw_hi && (uint32_t)((a) - g_rdw_lo) < g_rdw_hi - g_rdw_lo)) ++g_rdw_hits;
     uint8_t* p = g_x86_page[a >> 12];
     return X86_UNLIKELY(!p) ? x86_mem_read(a, 1) : p[a & 0xFFF];
 }
 static inline uint32_t rd16(uint32_t a) {
+    if (X86_UNLIKELY(g_rdw_lo != g_rdw_hi && (uint32_t)((a) - g_rdw_lo) < g_rdw_hi - g_rdw_lo)) ++g_rdw_hits;
     uint8_t* p = g_x86_page[a >> 12];
     if (X86_UNLIKELY(!p || (a & 0xFFF) > 0xFFE)) return x86_mem_read(a, 2);
     uint16_t v; std::memcpy(&v, p + (a & 0xFFF), 2); return v;
 }
 static inline uint32_t rd32(uint32_t a) {
+    if (X86_UNLIKELY(g_rdw_lo != g_rdw_hi && (uint32_t)((a) - g_rdw_lo) < g_rdw_hi - g_rdw_lo)) ++g_rdw_hits;
     uint8_t* p = g_x86_page[a >> 12];
     if (X86_UNLIKELY(!p || (a & 0xFFF) > 0xFFC)) return x86_mem_read(a, 4);
     uint32_t v; std::memcpy(&v, p + (a & 0xFFF), 4); return v;

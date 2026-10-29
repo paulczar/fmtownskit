@@ -15,6 +15,11 @@
 // the watched byte in a loop cannot bury the useful first hit.
 uint32_t g_watch_lo = 0, g_watch_hi = 0;
 const X86Cpu* g_x86_cur = nullptr;
+// A read counter over one linear range, the counterpart to the write watch. "Does this program read the font at all"
+// is a question only a read can answer: a routine that looks up a character and then declines to draw produces no
+// writes, and a write watch cannot tell that apart from a routine that was never called.
+uint32_t g_rdw_lo = 0, g_rdw_hi = 0;
+unsigned long long g_rdw_hits = 0;
 static long g_watch_hits = 0;
 // The bound is a default, not a law: 64 hits is right for "what writes this one byte" and wrong for "what does
 // this redraw write", where the fills come first and bury the interesting part. A port raises it with
