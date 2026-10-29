@@ -20,6 +20,18 @@ const X86Cpu* g_x86_cur = nullptr;
 // writes, and a write watch cannot tell that apart from a routine that was never called.
 uint32_t g_rdw_lo = 0, g_rdw_hi = 0;
 unsigned long long g_rdw_hits = 0;
+// Which instruction read the watched range, deduped, so a reader in a loop is one line. Bounded by g_watch_max: the
+// same budget question as the write watch, and the same answer.
+void x86_read_watch(uint32_t a) {
+    ++g_rdw_hits;
+    static std::set<std::pair<uint16_t, uint32_t>> seen;
+    const X86Cpu* c = g_x86_cur;
+    if (!c) return;
+    std::pair<uint16_t, uint32_t> key{ c->sreg[1], c->eip };
+    if (!seen.insert(key).second) return;
+    if (seen.size() > g_watch_max) return;
+    std::fprintf(stderr, "rdwatch   %08x read by %04x:%08x\n", a, (unsigned)c->sreg[1], c->eip);
+}
 static long g_watch_hits = 0;
 // The bound is a default, not a law: 64 hits is right for "what writes this one byte" and wrong for "what does
 // this redraw write", where the fills come first and bury the interesting part. A port raises it with
