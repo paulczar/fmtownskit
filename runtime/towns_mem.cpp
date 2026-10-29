@@ -16,8 +16,17 @@
 uint32_t g_watch_lo = 0, g_watch_hi = 0;
 const X86Cpu* g_x86_cur = nullptr;
 static long g_watch_hits = 0;
+// The bound is a default, not a law: 64 hits is right for "what writes this one byte" and wrong for "what does
+// this redraw write", where the fills come first and bury the interesting part. A port raises it with
+// g_watch_max, and arms late (the port's U2_WATCH_AT) so the log holds the operation under study rather than the
+// program's start-up. Measured before this knob existed: four different watches all reported exactly 64 lines,
+// all of them the same start-up fill, which read as "nothing else writes this range".
+uint32_t g_watch_max = 64;
 void x86_watch_write(uint32_t a, uint32_t v, int n) {
-    if (++g_watch_hits > 64) return;
+    if ((uint32_t)++g_watch_hits > g_watch_max) {
+        if ((uint32_t)g_watch_hits == g_watch_max + 1) std::fprintf(stderr, "watch     capped at %u hits\n", g_watch_max);
+        return;
+    }
     const X86Cpu* c = g_x86_cur;
     const uint32_t mask = n == 4 ? 0xFFFFFFFFu : n == 2 ? 0xFFFFu : 0xFFu;
     std::fprintf(stderr, "watch     %08x = %0*x (%dB) at %04x:%08x\n", a, n * 2, v & mask, n,
