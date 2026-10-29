@@ -139,6 +139,7 @@ public:
 
     // memory: host pages for the linear ranges that are plain memory
     void map_ram(uint32_t linear, uint32_t size);           // zero-filled
+    void unmap_font_window();                               // drop RAM over the ANK font's physical pages
     uint8_t* host(uint32_t linear);                         // the byte's host address, or null
     void write_block(uint32_t linear, const uint8_t* p, uint32_t n);
     void read_block(uint32_t linear, uint8_t* p, uint32_t n);

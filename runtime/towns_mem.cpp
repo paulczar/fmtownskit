@@ -99,6 +99,12 @@ void Machine::map_ram(uint32_t linear, uint32_t size) {
     }
 }
 
+void Machine::unmap_font_window() {
+    // Drop the RAM pages covering the ANK font's physical window so read8's font cases answer instead. Without this the
+    // page table hits first and returns the zero-filled RAM that boot_towns put there.
+    for (uint32_t a = 0xCA000; a < 0xCC000; a += 0x1000) g_x86_page[a >> 12] = nullptr;
+}
+
 uint8_t* Machine::host(uint32_t a) {
     uint8_t* p = g_x86_page[a >> 12];
     return p ? p + (a & 0xFFF) : nullptr;
@@ -140,6 +146,14 @@ static uint8_t read8(Machine& m, uint32_t a) {
         return m.sound.wave[bank | (a & 0xFFF)];
     }
     if (a >= 0xC2100000u && a < 0xC2140000u && !m.font.empty()) return m.font[(a - 0xC2100000u) % m.font.size()];
+    // THE ANK FONT'S PHYSICAL WINDOW, which is a different view of the same ROM. The emulator's townsdef.h gives the
+    // mapping outright: physical 0xCA000 is the 8x8 ANK block and reads font ROM offset 0x3D000, physical 0xCB000 is
+    // the 16x16 block and reads 0x3D800. It is not linear across the two, which is why a window mapped by subtraction
+    // alone gives the wrong glyphs. These addresses sit inside the low 768 KB that boot_towns maps as RAM, so the RAM
+    // pages for them have to be dropped first (Machine::unmap_font_window), or the page table answers instead and the
+    // game reads zeroes: that is what made the copyright notice's box empty while its bars, which are layer art, drew.
+    if (a >= 0xCA000u && a < 0xCB000u && !m.font.empty()) return m.font[(0x3D000u + (a - 0xCA000u)) % m.font.size()];
+    if (a >= 0xCB000u && a < 0xCC000u && !m.font.empty()) return m.font[(0x3D800u + (a - 0xCB000u)) % m.font.size()];
     if (a >= 0x81000000u && a < 0x81020000u) return m.sprram[a - 0x81000000u];     // count_access
     unknown("read of linear %08x (no device)", a & ~0xFFFu);
     return 0;
