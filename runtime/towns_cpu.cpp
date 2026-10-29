@@ -21,6 +21,8 @@ uint32_t g_trace_far_sel = 0;
 uint32_t g_trace_far_all = 0;
 uint32_t g_far_eax = 0;
 uint32_t g_trace_fn_cs = 0, g_trace_fn_lo = 0, g_trace_fn_hi = 0;
+uint32_t g_trace_fn_dump_off = 0, g_trace_fn_dump_len = 0;
+const char* g_trace_fn_dump_path = nullptr;
 
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why) {
     std::fprintf(stderr, "fault at %04x:%08x: %s (eip %08x, frame %llu)\n", c.sreg[1], site, why, c.eip,
@@ -44,6 +46,20 @@ static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
             std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x\n",
                          cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
                          c.r[6], c.r[7], c.r[5], c.sbase[0], c.sbase[3], c.sbase[5]);
+        // Dump the routine's state at the same instant the machine's breakpoint fires, so a comparison of two samples
+        // is a comparison of the same moment. Done once: a per-call dump is a file per iteration and no more truth.
+        static bool dumped = false;
+        if (!dumped && g_trace_fn_dump_path && g_trace_fn_dump_len && g_towns) {
+            dumped = true;
+            const uint32_t at = c.sbase[5] + c.r[5] + g_trace_fn_dump_off;
+            std::vector<uint8_t> buf(g_trace_fn_dump_len);
+            g_towns->read_block(at, buf.data(), buf.size());
+            if (FILE* fp = std::fopen(g_trace_fn_dump_path, "wb")) {
+                std::fwrite(buf.data(), 1, buf.size(), fp);
+                std::fclose(fp);
+                std::printf("fndump    %08x -> %s (%u bytes)\n", at, g_trace_fn_dump_path, g_trace_fn_dump_len);
+            }
+        }
     }
     X86Func f = x86_lookup_cs(cs & 0xFFFC, off);
     if (!f) f = x86_lookup_cs(cs, off);
