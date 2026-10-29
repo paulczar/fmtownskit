@@ -29,8 +29,8 @@ void x86_watch_write(uint32_t a, uint32_t v, int n) {
     }
     const X86Cpu* c = g_x86_cur;
     const uint32_t mask = n == 4 ? 0xFFFFFFFFu : n == 2 ? 0xFFFFu : 0xFFu;
-    std::fprintf(stderr, "watch     %08x = %0*x (%dB) at %04x:%08x\n", a, n * 2, v & mask, n,
-                 c ? (unsigned)c->sreg[1] : 0, c ? c->eip : 0);
+    std::fprintf(stderr, "watch     %08x = %0*x (%dB) at %04x:%08x eax %08x\n", a, n * 2, v & mask, n,
+                 c ? (unsigned)c->sreg[1] : 0, c ? c->eip : 0, g_far_eax);
 }
 
 namespace towns {

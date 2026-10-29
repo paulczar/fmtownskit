@@ -18,6 +18,8 @@ using towns::g_towns;
 
 // The far-selector trace (x86.h). Zero is off. See x86_far for why this exists.
 uint32_t g_trace_far_sel = 0;
+uint32_t g_trace_far_all = 0;
+uint32_t g_far_eax = 0;
 
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why) {
     std::fprintf(stderr, "fault at %04x:%08x: %s (eip %08x, frame %llu)\n", c.sreg[1], site, why, c.eip,
@@ -50,8 +52,21 @@ void x86_far(X86Cpu& c, uint32_t sel, uint32_t off, bool call, int n, uint32_t n
     // a dedup set makes it one line per distinct call site rather than one per call.
     if (g_trace_far_sel && sel == (g_trace_far_sel & 0xFFFF)) {
         static std::set<std::pair<uint32_t, uint32_t>> seen;
+        static long calls = 0;
         // `next` is the resume address in the caller, and c.sreg[1] is still the caller's segment here.
         std::pair<uint32_t, uint32_t> key{ ((uint32_t)c.sreg[1] << 16) | (next & 0xFFFF), off };
+        // The registers of the call in flight, so a write inside the layer can be attributed to the request that
+        // caused it. A dispatcher takes its function number as an argument, which means the number exists only
+        // here: this is the only place it can be captured.
+        g_far_eax = c.r[0];
+        if (g_trace_far_all) {
+            if (++calls <= (long)g_trace_far_all)
+                std::fprintf(stderr, "call     f%llu %04x:%08x -> %04x:%08x eax %08x ebx %08x ecx %08x edx %08x\n",
+                             (unsigned long long)(g_towns ? g_towns->frame : 0), c.sreg[1], next, sel, off, c.r[0], c.r[3],
+                             c.r[1], c.r[2]);
+            else if (calls == (long)g_trace_far_all + 1)
+                std::fprintf(stderr, "call     capped at %u calls\n", g_trace_far_all);
+        }
         if (seen.insert(key).second)
             std::fprintf(stderr, "far      %04x:%08x -> %04x:%08x%s eax %08x ebx %08x ecx %08x edx %08x\n", c.sreg[1], next,
                          sel, off, call ? "" : " (jump)", c.r[0], c.r[3], c.r[1], c.r[2]);
