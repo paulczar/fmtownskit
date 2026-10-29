@@ -89,8 +89,35 @@ static unsigned held_pad(SDL_Gamepad* g) {
 
 // PATCH, this repository: SDL's scancode as the Towns' keyboard scan code, and the character SDL computed for it
 // (which already has the shift state applied, so 'shift+1' arrives as '!'). Only keys a program can distinguish are
-// mapped, and an unmapped key reports nothing rather than a guess. The Towns scan codes here are PC/AT set 1, which
-// is what this project measured on the machine: 'a' is 0x1E, and ENCHANT indexes a 114-entry table with it.
+// mapped, and an unmapped key reports nothing rather than a guess.
+//
+// THE TOWNS KEYBOARD IS A JIS KEYBOARD AND ITS CODES ARE NOT PC/AT SET 1. The switch below is PC/AT because that is
+// what SDL reports and it is worth being able to read; kPcToTowns translates it, and the disagreement is exactly where
+// a player notices first: RETURN is 0x1D on the Towns and 0x1C on PC, SPACE 0x35 against 0x39, UP 0x4D against 0x48,
+// LEFT 0x4F against 0x4B, RIGHT 0x51 against 0x4D, SHIFT 0x53 against 0x2A, CTRL 0x52 against 0x1D, and Z is 0x2A
+// against 0x2C, which shifts the whole bottom letter row. Values from references/TOWNSEMU's TOWNS_JISKEY_* enum.
+//
+// The consequence is measurable and was measured: ENCHANT indexes a 114-entry table with `(BX >> 8) - 1`, so a code
+// from the wrong set indexes the wrong entry and the key reads as dead. On the port, space, return and up did nothing
+// while 'a' and down worked, and those are precisely the two the two sets happen to share.
+static const uint8_t kPcToTowns[128] = {
+    /* 0x00 */ 0,    0,    0,    0,    0,    0,    0,    0,
+    /* 0x08 */ 0,    0,    0,    0,    0x0C, 0x0D, 0x0F, 0x10,   // minus 0x0C, hat 0x0D, backspace 0x0F, tab 0x10
+    /* 0x10 */ 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,   // Q W E R T Y U I
+    /* 0x18 */ 0x19, 0x1A, 0x1C, 0x29, 0x1D, 0x52, 0x1E, 0x1F,   // O P [ ] return ctrl A S
+    /* 0x20 */ 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,   // D F G H J K L ;
+    /* 0x28 */ 0x28, 0,    0x53, 0x0E, 0x2A, 0x2B, 0x2C, 0x2D,   // ' becomes colon 0x28, shift 0x53, Z X C V
+    /* 0x30 */ 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x53, 0,      // B N M , . / right shift
+    /* 0x38 */ 0,    0x35, 0x55, 0x5D, 0x5E, 0x5F, 0x60, 0x61,   // space 0x35, caps 0x55, PF01..PF05
+    /* 0x40 */ 0x62, 0x63, 0x64, 0x65, 0x66, 0,    0,    0x4E,   // PF06..PF10, home 0x4E
+    /* 0x48 */ 0x4D, 0x6E, 0,    0x4F, 0,    0x51, 0,    0x70,   // up 0x4D, prev, left 0x4F, right 0x51, next
+    /* 0x50 */ 0x50, 0x70, 0x48, 0x4B, 0,    0,    0,    0,      // down 0x50, insert 0x48, delete 0x4B
+    /* 0x58 */ 0,    0,    0,    0,    0,    0,    0,    0,
+    /* 0x60 */ 0,    0,    0,    0,    0,    0,    0,    0,
+    /* 0x68 */ 0,    0,    0,    0,    0,    0,    0,    0,
+    /* 0x70 */ 0,    0,    0,    0,    0,    0,    0,    0,
+};
+
 static bool towns_key(const SDL_KeyboardEvent& k, uint8_t& scan, uint8_t& ascii) {
     switch (k.scancode) {
     case SDL_SCANCODE_ESCAPE: scan = 0x01; break;
@@ -134,6 +161,9 @@ static bool towns_key(const SDL_KeyboardEvent& k, uint8_t& scan, uint8_t& ascii)
     case SDL_SCANCODE_INSERT: scan = 0x52; break;     case SDL_SCANCODE_DELETE: scan = 0x53; break;
     default: return false;
     }
+    // PC/AT set 1 as SDL reports it, now as the code the Towns keyboard would have sent for the same key.
+    scan = kPcToTowns[scan & 0x7F];
+    if (!scan) return false;
     ascii = (k.key >= 0x20 && k.key < 0x7F) ? (uint8_t)k.key : 0;
     return true;
 }
