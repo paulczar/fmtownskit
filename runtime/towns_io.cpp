@@ -342,8 +342,23 @@ void Machine::out8(uint32_t port, uint8_t d) {
         // palette chosen, after the other components went in with the 256-colour one.
         int k = port == 0xFD92 ? 2 : port == 0xFD94 ? 0 : 1;   // b r g
         v.pal_reg[v.pal_sel][k] = d;
-        uint8_t* rgb = (v.vreg[1] & 0x10) ? v.pal256[v.pal_sel] : v.pal16[(v.vreg[1] & 0x20) >> 5][v.pal_sel & 15];
-        std::memcpy(rgb, v.pal_reg[v.pal_sel], 3);
+        // THE 16-COLOUR PALETTE TAKES THE HIGH NIBBLE AND EXPANDS IT, the 256-colour one takes the byte.
+        // The emulator does this in TownsCrtcBase::AnalogPalette::Set16, as `v &= 0xF0; v |= v >> 4;`, and
+        // Set256 as a plain store. Skipping it drew every 16-colour entry as the game's raw byte, so a
+        // component written as 0x78 came out 0x78 instead of 0x77 and the port's colours were slightly
+        // wrong for every entry the game sets. Measured against `PRI PALETTE` on the running game, where
+        // the machine reports 007777, FFFF55, 11CC22, 0022EE and the port reported 0A7878, FFFF50, 14C828,
+        // 0028E6 for the same four entries. pal_reg stays raw, as the emulator keeps it, because a component
+        // written under one palette has to survive a switch to the other.
+        if (v.vreg[1] & 0x10) {
+            std::memcpy(v.pal256[v.pal_sel], v.pal_reg[v.pal_sel], 3);
+        } else {
+            uint8_t* rgb = v.pal16[(v.vreg[1] & 0x20) >> 5][v.pal_sel & 15];
+            for (int i = 0; i < 3; ++i) {
+                uint8_t x = (uint8_t)(v.pal_reg[v.pal_sel][i] & 0xF0);
+                rgb[i] = (uint8_t)(x | (x >> 4));
+            }
+        }
         return;
     }
     case 0xFDA0: v.layer_ctrl = d; return;
