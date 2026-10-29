@@ -146,6 +146,10 @@ static uint8_t read8(Machine& m, uint32_t a) {
         return m.sound.wave[bank | (a & 0xFFF)];
     }
     if (a >= 0xC2100000u && a < 0xC2140000u && !m.font.empty()) return m.font[(a - 0xC2100000u) % m.font.size()];
+    // THE 20-DOT FONT, a second ROM with its own window (emulator's townsdef.h: base 0xC2180000, 512 KB, masked).
+    // It is separate from the ANK font above and from the PCM window at 0xC2200000, and a program that renders a title
+    // screen's large text can be using this one rather than the ANK block.
+    if (a >= 0xC2180000u && a < 0xC2200000u && !m.font20.empty()) return m.font20[(a - 0xC2180000u) % m.font20.size()];
     // THE ANK FONT'S PHYSICAL WINDOW, which is a different view of the same ROM. The emulator's townsdef.h gives the
     // mapping outright: physical 0xCA000 is the 8x8 ANK block and reads font ROM offset 0x3D000, physical 0xCB000 is
     // the 16x16 block and reads 0x3D800. It is not linear across the two, which is why a window mapped by subtraction

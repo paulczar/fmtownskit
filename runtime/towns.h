@@ -281,6 +281,7 @@ public:
     // tracing
     bool trace_io = false, trace_int = false;
     std::vector<uint8_t> font;          // FMT_FNT.ROM if given (not needed so far)
+    std::vector<uint8_t> font20;        // FMT_F20.ROM, the 512 KB 20-dot font at 0xC2180000
 };
 
 extern Machine* g_towns;
