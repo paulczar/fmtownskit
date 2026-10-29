@@ -41,9 +41,9 @@ static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
         && off <= g_trace_fn_hi) {
         static long entries = 0;
         if (++entries <= (long)g_watch_max)
-            std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x\n",
+            std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x\n",
                          cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
-                         c.r[6], c.r[7], c.r[5]);
+                         c.r[6], c.r[7], c.r[5], c.sbase[0], c.sbase[3], c.sbase[5]);
     }
     X86Func f = x86_lookup_cs(cs & 0xFFFC, off);
     if (!f) f = x86_lookup_cs(cs, off);
