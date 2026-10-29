@@ -91,9 +91,9 @@ void x86_far(X86Cpu& c, uint32_t sel, uint32_t off, bool call, int n, uint32_t n
         g_far_eax = c.r[0];
         if (g_trace_far_all) {
             if (++calls <= (long)g_trace_far_all)
-                std::fprintf(stderr, "call     f%llu %04x:%08x -> %04x:%08x eax %08x ebx %08x ecx %08x edx %08x\n",
+                std::fprintf(stderr, "call     f%llu %04x:%08x -> %04x:%08x eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x\n",
                              (unsigned long long)(g_towns ? g_towns->frame : 0), c.sreg[1], next, sel, off, c.r[0], c.r[3],
-                             c.r[1], c.r[2]);
+                             c.r[1], c.r[2], c.r[6], c.r[7]);
             else if (calls == (long)g_trace_far_all + 1)
                 std::fprintf(stderr, "call     capped at %u calls\n", g_trace_far_all);
         }
