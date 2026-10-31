@@ -239,7 +239,11 @@ public:
     uint16_t next_ldt = 0x44;
     uint32_t rm_buffer = 0x408C0;       // Phar Lap's real-mode call buffer (linear; 250Dh)
     struct Handle { bool used = false; bool host = false; FILE* f = nullptr;
-                    std::vector<uint8_t> data; uint32_t pos = 0; };
+                    std::vector<uint8_t> data; uint32_t pos = 0;
+                    // PATCH, this repository. Non-empty when the handle is backed by the host's floppy image and
+                    // the host allows writes to it; it holds the name to flush under. `dirty` is set by a write so
+                    // that opening a file read-only and closing it cannot touch the image at all.
+                    std::string floppy_path; bool dirty = false; };
     std::vector<Handle> handles = std::vector<Handle>(32);
     uint32_t dta = 0, dta_off = 0;      // the disk transfer area (1Ah), linear, and as DS:EDX gave it
     uint16_t dta_sel = 0;

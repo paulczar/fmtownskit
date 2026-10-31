@@ -42,10 +42,17 @@ static int new_handle(Machine& m) {
 // for a key, and the port sat there for 24,000 frames looking healthy. The machine mounts the same image, so the
 // honest fix is to read it rather than to answer the query with a plausible lie.
 //
-// The two hooks are defined in port/main.cpp over port/floppy.h, which is a FAT12 reader. Returning false means
-// "this runtime has no floppy", and every other drive behaves exactly as before.
+// The hooks are defined in port/main.cpp over port/floppy.h, which is a FAT12 reader and writer. Returning false
+// means "this runtime has no floppy", and every other drive behaves exactly as before.
+//
+// The last two are the write path, and they exist because a created character that cannot reach ROSTER1.UT2 is a
+// character that does not exist. `fm_floppy_writable` is the host's policy answer for one name: false for a
+// read-only image, and the handle then behaves exactly as it always did. `fm_floppy_write` is called on close, and
+// only for a handle that was actually written to.
 bool fm_floppy_attrs(const std::string& path, uint32_t& attrib, uint32_t& size);
 bool fm_floppy_read(const std::string& path, std::vector<uint8_t>& out);
+bool fm_floppy_writable(const std::string& path);
+bool fm_floppy_write(const std::string& path, const std::vector<uint8_t>& data);
 
 static bool on_floppy(const std::string& name) {
     return name.size() >= 2 && name[1] == ':' && std::toupper((unsigned char)name[0]) == 'A';
@@ -328,13 +335,23 @@ void Machine::int21(X86Cpu& c) {
             int fh = new_handle(*this);
             if (fh < 0) { set_cf(c, true); s16(c, 0, 4); return; }
             Handle& hf = handles[fh];
-            if (ah == 0x3C || !fm_floppy_read(name, hf.data)) {
+            // The host decides whether this image takes writes. A create on a read-only disk still fails with 5,
+            // which is what it did before this existed, and an open for read-only leaves floppy_path empty so a
+            // later write is refused exactly as it was.
+            const bool can_write = fm_floppy_writable(name);
+            if (ah == 0x3C) {
+                if (!can_write) {
+                    if (trace_int) std::fprintf(stderr, "  %s: create refused, the floppy is read-only\n", name.c_str());
+                    set_cf(c, true); s16(c, 0, 5); return;
+                }
+            } else if (!fm_floppy_read(name, hf.data)) {
                 if (trace_int) std::fprintf(stderr, "  %s: not on the floppy\n", name.c_str());
-                set_cf(c, true); s16(c, 0, ah == 0x3C ? 5 : 2); return;
+                set_cf(c, true); s16(c, 0, 2); return;
             }
             hf.host = false; hf.used = true; hf.pos = 0;
-            if (trace_int) std::fprintf(stderr, "  %s -> handle %d (floppy, %u bytes)\n", name.c_str(), fh,
-                                        (unsigned)hf.data.size());
+            if (can_write && (ah == 0x3C || (al & 3) != 0)) hf.floppy_path = name;
+            if (trace_int) std::fprintf(stderr, "  %s -> handle %d (floppy, %u bytes%s)\n", name.c_str(), fh,
+                                        (unsigned)hf.data.size(), hf.floppy_path.empty() ? ", read-only" : ", writable");
             s16(c, 0, (uint32_t)fh);
             set_cf(c, false);
             return;
@@ -364,6 +381,13 @@ void Machine::int21(X86Cpu& c) {
         uint32_t h = c.r[3] & 0xFFFF;
         if (h >= handles.size() || !handles[h].used) { set_cf(c, true); s16(c, 0, 6); return; }
         Handle& hd = handles[h];
+        // PATCH, this repository: a floppy handle that was written to hands its bytes to the image on close.
+        // Nothing else about close changes.
+        if (!hd.floppy_path.empty() && hd.dirty) {
+            const bool ok = fm_floppy_write(hd.floppy_path, hd.data);
+            if (trace_int) std::fprintf(stderr, "  close %s: flushed %u bytes to the floppy%s\n",
+                                        hd.floppy_path.c_str(), (unsigned)hd.data.size(), ok ? "" : ", FAILED");
+        }
         if (hd.f) std::fclose(hd.f);
         hd = Handle{};
         set_cf(c, false);
@@ -398,8 +422,17 @@ void Machine::int21(X86Cpu& c) {
             write_block(buf, tmp.data(), done);
         } else {
             read_block(buf, tmp.data(), n);
-            if (!hd.host) { set_cf(c, true); s16(c, 0, 5); return; }
-            done = (uint32_t)std::fwrite(tmp.data(), 1, n, hd.f);
+            if (hd.host) {
+                done = (uint32_t)std::fwrite(tmp.data(), 1, n, hd.f);
+            } else if (!hd.floppy_path.empty()) {   // PATCH, this repository: writes land in the handle's bytes
+                if (hd.pos + n > hd.data.size()) hd.data.resize(hd.pos + n);
+                if (n) std::memcpy(hd.data.data() + hd.pos, tmp.data(), n);
+                hd.pos += n;
+                hd.dirty = true;
+                done = n;
+            } else {
+                set_cf(c, true); s16(c, 0, 5); return;
+            }
         }
         c.r[0] = done;
         set_cf(c, false);
