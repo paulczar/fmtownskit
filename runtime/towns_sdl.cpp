@@ -176,15 +176,21 @@ void SdlHost::vsync(Machine& m) {
         case SDL_EVENT_QUIT: throw Stop{0};
         case SDL_EVENT_KEY_DOWN:
             if (e.key.repeat) break;
-            if (e.key.scancode == SDL_SCANCODE_ESCAPE) throw Stop{0};
+            // Escape does NOT quit. It is the easiest key to hit by accident and the guest uses it, so a window
+            // that ends the session on it loses work. Quitting is Ctrl-Q, which nobody presses by mistake, and
+            // closing the window, which is SDL_EVENT_QUIT above and stays as it was.
+            //
+            // Escape is still not delivered to the guest: kPcToTowns drops index 0x01, and giving it the Towns
+            // escape scancode means measuring that value rather than assuming it matches PC set 1. So this is
+            // only the removal of the quit, and the key is currently inert in-game.
+            if (e.key.scancode == SDL_SCANCODE_Q && (e.key.mod & SDL_KMOD_CTRL)) throw Stop{0};
             if (e.key.scancode == SDL_SCANCODE_F11 || (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT)))
                 SDL_SetWindowFullscreen(s.win, !(SDL_GetWindowFlags(s.win) & SDL_WINDOW_FULLSCREEN));
             if (e.key.scancode == SDL_SCANCODE_F5) m.set_cpu_rate(m.cpu_rate - 5);
             if (e.key.scancode == SDL_SCANCODE_F6) m.set_cpu_rate(m.cpu_rate + 5);
             if (e.key.scancode == SDL_SCANCODE_F7) m.set_cpu_rate(100);
             // PATCH, this repository: after the front-end's own keys, hand the keystroke to the program as the
-            // Towns' keyboard would, when a caller asked for it. Escape has already quit above, deliberately:
-            // a window needs a way out that the guest cannot swallow.
+            // Towns' keyboard would, when a caller asked for it.
             if (on_key) {
                 uint8_t scan = 0, ascii = 0;
                 if (towns_key(e.key, scan, ascii)) on_key(scan, ascii);
