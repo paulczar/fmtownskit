@@ -264,6 +264,16 @@ public:
     // pressed, so KYB_read (AH=09h) answered "none" unconditionally and a program waiting for a key waited
     // for ever. The pair is (scan code, ASCII), and the measured contract is in towns_dos.cpp's int90.
     void press_key(uint8_t scan, uint8_t ascii);
+    // Drop everything still pending. The machine this emulates does not queue input across a turn: pressing
+    // a direction twice quickly acts once, because the second press arrives while the first turn is running
+    // and the guest is not asking for a key. Measured against Tsugaru 2026-11-01 and recorded in
+    // docs/port-defects.md. A caller that can see a turn boundary uses this to reproduce that.
+    void clear_keys() { keys.clear(); }
+    // Called BEFORE the guest is given a key, from inside the KYB_read handler. A caller that can see a turn
+    // boundary uses it to drop what is still pending, so a press that arrived during the turn just ended is
+    // never served. It has to be before the serve rather than after: after, the guest has already taken the
+    // next key and that key acts, which makes eight queued presses cost two turns instead of one.
+    std::function<void()> before_key_served;
     struct Key { uint8_t scan, ascii; };
     std::vector<Key> keys;              // pending presses, served in order by KYB_read
     unsigned long keys_served = 0;      // how many KYB_read calls took one, for reports

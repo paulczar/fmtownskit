@@ -650,6 +650,9 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
 // The keyboard, as a port drives it. One queue, served in order, so a sequence of presses reads back in the order
 // the program asked for them. Nothing else consumes it: this is not a keyboard driver, it is the minimum that lets
 // a program waiting for a key proceed, and the measured contract is in int90's case 0x09.
+//
+// clear_keys lives in the header, next to the queue it empties. It exists because the machine does not carry
+// input across a turn, which a caller with a turn boundary can reproduce.
 void Machine::press_key(uint8_t scan, uint8_t ascii) { keys.push_back(Key{scan, ascii}); }
 
 // The keyboard BIOS, int 90h, as FORRBIOS.NSD answers it in protected mode (the program
@@ -678,6 +681,8 @@ void Machine::int90(X86Cpu& c) {
         // and with no key, BX = 0xFF00 and DX = 0xFFFF, which is what the recordings showed. ENCHANT tests
         // `(BX & 0xFF00) == 0xFF00` for "none", then indexes a 114-entry table with `(BX >> 8) - 1`, so it reads
         // the SCAN CODE and DX is a convenience.
+        // Before anything is served, let a caller that can see a turn boundary drop what is left over.
+        if (before_key_served) before_key_served();
         if (!keys.empty()) {
             Key k = keys.front();
             keys.erase(keys.begin());
