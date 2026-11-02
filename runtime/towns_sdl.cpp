@@ -168,6 +168,13 @@ static bool towns_key(const SDL_KeyboardEvent& k, uint8_t& scan, uint8_t& ascii)
     return true;
 }
 
+bool towns_key_scancode(int sdl_scancode, int sdl_key, uint8_t& scan, uint8_t& ascii) {
+    SDL_KeyboardEvent k {};
+    k.scancode = (SDL_Scancode)sdl_scancode;
+    k.key = (SDL_Keycode)sdl_key;
+    return towns_key(k, scan, ascii);
+}
+
 void SdlHost::vsync(Machine& m) {
     Impl& s = *p_;
     SDL_Event e;

@@ -337,4 +337,11 @@ private:
 // (0x84, 0x85) as MAME's driver takes them, the mix written from power-on for `seconds`.
 bool replay_sound_log(Machine& m, const std::string& log, double seconds, WavWriter& wav, std::string& err);
 
+// Translate a PC keystroke into the Towns' (scan, ascii) pair using the same table the window's own key path
+// uses. It exists so a headless run can deliver a key at all: the guest does not care where a keystroke came
+// from, but only `towns_key` in towns_sdl.cpp knows which Towns scan code a PC scancode maps to, and copying
+// that table here would be a second one to keep in step. The arguments are plain ints so this header does not
+// need SDL's, which is what lets a headless build call it. False means the Towns keyboard has no code for it.
+bool towns_key_scancode(int sdl_scancode, int sdl_key, uint8_t& scan, uint8_t& ascii);
+
 }  // namespace towns
