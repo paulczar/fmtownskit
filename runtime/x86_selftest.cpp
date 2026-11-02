@@ -82,6 +82,10 @@ void x86_call(X86Cpu& c, uint32_t target) {
     if (!f) stop("call to a non-entry");
     f(c);
 }
+// The self-test harness links a single module and has no overlays, so a known call is just the call. Both symbols
+// exist here so the same generated module compiles against either runtime.
+X86Func x86_shadow(uint16_t, uint32_t) { return nullptr; }
+void x86_call_known(X86Cpu& c, uint32_t, X86Func fn) { fn(c); }
 void x86_jump(X86Cpu& c, uint32_t target) {
     X86Func f = x86_lookup(g_cur, target);
     if (!f) stop("jump to a non-entry");

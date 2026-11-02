@@ -218,6 +218,13 @@ void     x86_iret(X86Cpu& c, int n);
 void     x86_system(X86Cpu& c, uint32_t site, const char* what);      // lgdt, mov crN, hlt, ...
 bool     x86_lsl(X86Cpu& c, uint32_t sel, uint32_t& limit);           // false: no such selector
 void     x86_call(X86Cpu& c, uint32_t target);           // a call through a register or memory
+// A call to a function the module already holds: `fn` is that function's translation. The call consults the
+// OVERLAY table first, which is module 0 by contract, so a natively written replacement wins over the
+// translation. This is what makes the strangler's seam work without paying for it: with no overlays installed
+// the table is empty and the cost is one comparison before the direct call, and adding an overlay never needs
+// the module regenerated because every known call site already comes through here.
+void     x86_call_known(X86Cpu& c, uint32_t target, X86Func fn);
+X86Func  x86_shadow(uint16_t cs, uint32_t addr);         // the overlay for cs:addr, or null
 void     x86_jump(X86Cpu& c, uint32_t target);           // a jump the function does not hold
 void     x86_poll(X86Cpu& c);                            // the budget is spent: time, interrupts
 [[noreturn]] void x86_fault(X86Cpu& c, uint32_t site, const char* why);

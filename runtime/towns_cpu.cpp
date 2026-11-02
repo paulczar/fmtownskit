@@ -145,6 +145,29 @@ void x86_call(X86Cpu& c, uint32_t target) {
     f(c);
 }
 
+// The overlay table is module 0 by contract: a port that wants replacements lists its native module first, and the
+// translation second. Searching it separately from the full module list is the entire point of x86_call_known,
+// because find() walks every module and binary-searches the game's several hundred functions, which is far too much
+// to spend on proving that no replacement exists. Here that case is `nfuncs == 0` or a bare address compare.
+X86Func x86_shadow(uint16_t cs, uint32_t addr) {
+    if (g_x86_nmodules <= 0) return nullptr;
+    const X86Module& m = *g_x86_modules[0];
+    if (m.nfuncs == 0 || (m.cs != 0 && m.cs != cs)) return nullptr;
+    uint32_t lo = 0, hi = m.nfuncs;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (m.funcs[mid].addr < addr) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < m.nfuncs && m.funcs[lo].addr == addr) return m.funcs[lo].fn;
+    return nullptr;
+}
+
+void x86_call_known(X86Cpu& c, uint32_t target, X86Func fn) {
+    X86Func s = x86_shadow(c.sreg[1], target);
+    (s ? s : fn)(c);
+}
+
 void x86_jump(X86Cpu& c, uint32_t target) {
     X86Func f = find(c, c.sreg[1], target, target);
     f(c);

@@ -430,7 +430,7 @@ class Emitter:
                 # a call made by hand (`push RET; jmp F`, the push already done): F's C++ called,
                 # its return checked to be RET, then on there
                 r = self.p.pushed[a]
-                L.append('f_%08x(c); X86_RET(c, 0x%xu); %s' % (o[1], r, self.go(a, r)))
+                L.append('x86_call_known(c, 0x%xu, f_%08x); X86_RET(c, 0x%xu); %s' % (o[1], o[1], r, self.go(a, r)))
             elif o[0] == 'j':
                 L.append(self.go(a, o[1]))
             elif a in self.p.tables:
@@ -446,12 +446,16 @@ class Emitter:
             o = ops[0]
             push = 'push32' if i.osize == 4 else 'push16'
             if o[0] == 'j':
-                L.append('%s(c, 0x%xu); f_%08x(c); X86_RET(c, 0x%xu);' % (push, nxt, o[1], nxt))
+                # Through x86_call_known, not f_XXXX(c) directly: a direct C++ call is invisible to the dispatch
+                # table, so a natively written replacement could never take effect for a call that begins and ends
+                # inside this module. With no replacements installed this costs one comparison.
+                L.append('%s(c, 0x%xu); x86_call_known(c, 0x%xu, f_%08x); X86_RET(c, 0x%xu);'
+                         % (push, nxt, o[1], o[1], nxt))
             elif a in self.p.tables:
                 L.append('{ uint32_t t = %s; %s(c, 0x%xu);' % (self.rd(i, o), push, nxt))
                 L.append('  switch (t) {')
                 for x in sorted(set(x for x in self.p.tables[a][1] if x)):
-                    L.append('  case 0x%xu: f_%08x(c); break;' % (x, x))
+                    L.append('  case 0x%xu: x86_call_known(c, 0x%xu, f_%08x); break;' % (x, x, x))
                 L.append('  default: x86_call(c, t); }')
                 L.append('  X86_RET(c, 0x%xu); }' % nxt)
             else:
