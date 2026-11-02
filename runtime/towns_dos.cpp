@@ -64,6 +64,14 @@ static bool on_disc(Machine& m, const std::string& name, std::string& path) {
     if (name.size() >= 2 && name[1] == ':') { drive = (char)std::toupper((unsigned char)name[0]); path = name.substr(2); }
     if (drive == 'Q') {                 // a relative name from the CD's current directory
         if (!m.cd_dir.empty() && (path.empty() || (path[0] != '\\' && path[0] != '/'))) path = m.cd_dir + "\\" + path;
+        // The port may already hold this file on the host, in which case it is not a disc read at all. Asked here
+        // rather than at each open site because this is the one place a guest path stops being a string and becomes
+        // a decision, so there is no second place for the rule to disagree with itself.
+        std::string host;
+        if (m.on_disc_cached && m.on_disc_cached(path, host)) {
+            path = host;
+            return false;
+        }
         return true;
     }
     while (!path.empty() && (path[0] == '\\' || path[0] == '/')) path.erase(0, 1);

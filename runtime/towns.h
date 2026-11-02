@@ -196,6 +196,11 @@ public:
     void sound_irq();                   // IRQ13 from the FM's and the PCM's flags
     void cd_play(uint32_t from, uint32_t to);
     void cd_stop();
+    // PATCH, this repository: a port may hold its own copy of a disc file on the host. Asked for the disc-internal
+    // path the game used ("\\GRAPH\\MAP2_1.TIF"), it answers true and fills `host` with a local path, and the DOS
+    // layer serves the file from there instead of from the disc. That is what lets a program stop needing the CD
+    // after it has read what it wants once. Returning false leaves the read on the disc, unchanged.
+    std::function<bool(const std::string& disc_path, std::string& host)> on_disc_cached;
     uint32_t cd_sector();               // the sector playing (or paused at), up to `now`
     // the mix since the last take: kAudioRate stereo frames, up to about `now`
     void audio_take(std::vector<int16_t>& out);
