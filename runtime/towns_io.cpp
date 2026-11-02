@@ -279,8 +279,24 @@ uint8_t Machine::in8(uint32_t port) {
     }
 }
 
+// When does the game start talking to the FM chip? Not "does it", and not "how many writes" -- but at what second,
+// counted from the machine's own frame clock, the chip traffic begins in earnest and whether it ever goes quiet again.
+// A register write is the only sign a note was asked for, so bucketing them by second answers the one question a
+// listener cannot answer from outside: whether the silence before the music is the program waiting or the port's mixer.
+static void fm_trace(uint64_t frame) {
+    static unsigned long long bucket = ~0ULL, hits = 0;
+    unsigned long long b = frame / 61;                   // the machine's VSYNC rate, so one bucket is one second
+    if (b != bucket) {
+        if (hits) std::fprintf(stderr, "  FM %llus %llu writes\n", bucket, hits);
+        bucket = b;
+        hits = 0;
+    }
+    ++hits;
+}
+
 void Machine::out8(uint32_t port, uint8_t d) {
     Video& v = video;
+    if (trace_int && port >= 0x4C0 && port <= 0x4FF) fm_trace(frame);
     switch (port) {
     case 0x00: pic_write(pic[0], 0, d); return;
     case 0x02: pic_write(pic[0], 2, d); return;

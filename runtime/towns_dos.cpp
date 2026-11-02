@@ -553,8 +553,22 @@ static uint32_t from_msf(const uint8_t* p) {
 
 void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
     uint8_t ah = (eax >> 8) & 0xFF, al = eax & 0xFF;
-    if (trace_int) std::fprintf(stderr, "int 93h AX=%04X CX=%04X BX=%04X buffer %05x\n", eax & 0xFFFF, c.r[1] & 0xFFFF,
-                                c.r[3] & 0xFFFF, buf);
+    if (trace_int) {
+        std::fprintf(stderr, "int 93h AX=%04X CX=%04X BX=%04X buffer %05x", eax & 0xFFFF, c.r[1] & 0xFFFF,
+                     c.r[3] & 0xFFFF, buf);
+        // The play request is six bytes: a from-MSF triple and a to-MSF triple. Which segment holds them is a real
+        // question rather than a detail: this port binds them to the caller's DS, and if the program puts them in ES
+        // instead then every play becomes "0 to 0" and the music never starts, with no error anywhere. Print both.
+        if (ah == 0x50) {
+            uint8_t qd[6] = {}, qe[6] = {};
+            read_block(buf, qd, 6);
+            read_block((uint32_t)c.sreg[0] * 16 + (c.r[3] & 0xFFFF), qe, 6);
+            std::fprintf(stderr, "  ES=%04X DS:+%02X%02X%02X/%02X%02X%02X ES:+%02X%02X%02X/%02X%02X%02X",
+                         c.sreg[0], qd[0], qd[1], qd[2], qd[3], qd[4], qd[5],
+                         qe[0], qe[1], qe[2], qe[3], qe[4], qe[5]);
+        }
+        std::fprintf(stderr, "\n");
+    }
     if (al != 0xC0) {
         // PATCH, this repository. AL is not always the CD-DA interface. The program's CD probe calls
         // int86(0x93) at guest 0xe2445 with AX=0x0220, then reads the returned AH from its outregs at
