@@ -224,6 +224,9 @@ void     x86_call(X86Cpu& c, uint32_t target);           // a call through a reg
 // the table is empty and the cost is one comparison before the direct call, and adding an overlay never needs
 // the module regenerated because every known call site already comes through here.
 void     x86_call_known(X86Cpu& c, uint32_t target, X86Func fn);
+// Log one entry into the U2_TRACE_FN address range, if one is set. Called from BOTH find() and x86_call_known,
+// because a call to a function the module already knows does not go through find() any more.
+void     x86_fn_trace_enter(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site);
 X86Func  x86_shadow(uint16_t cs, uint32_t addr);         // the overlay for cs:addr, or null
 void     x86_jump(X86Cpu& c, uint32_t target);           // a jump the function does not hold
 void     x86_poll(X86Cpu& c);                            // the budget is spent: time, interrupts

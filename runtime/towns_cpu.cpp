@@ -36,33 +36,42 @@ const char* g_trace_fn_dump_path = nullptr;
     std::exit(3);
 }
 
-static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
-    // PATCH, this repository: log every entry into one code-selector address range, deduped. This is how "does the
-    // program reach this routine at all" becomes answerable in a port whose functions are C++ calls with no
-    // instruction fetches to watch. Set from the port's U2_TRACE_FN=<cs>:<lo>:<hi>.
-    if (g_trace_fn_lo < g_trace_fn_hi && (cs & 0xFFFC) == (g_trace_fn_cs & 0xFFFC) && off >= g_trace_fn_lo
-        && off <= g_trace_fn_hi) {
-        static long entries = 0;
-        if (++entries <= (long)g_watch_max)
-            std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x\n",
-                         cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
-                         c.r[6], c.r[7], c.r[5], c.sbase[0], c.sbase[3], c.sbase[5]);
-        // Dump the routine's state at the same instant the machine's breakpoint fires, so a comparison of two samples
-        // is a comparison of the same moment. Done once: a per-call dump is a file per iteration and no more truth.
-        static bool dumped = false;
-        if (!dumped && g_trace_fn_dump_path && g_trace_fn_dump_len && g_towns
-            && g_towns->frame >= g_trace_fn_dump_frame) {
-            dumped = true;
-            const uint32_t at = c.sbase[5] + c.r[5] + g_trace_fn_dump_off;
-            std::vector<uint8_t> buf(g_trace_fn_dump_len);
-            g_towns->read_block(at, buf.data(), buf.size());
-            if (FILE* fp = std::fopen(g_trace_fn_dump_path, "wb")) {
-                std::fwrite(buf.data(), 1, buf.size(), fp);
-                std::fclose(fp);
-                std::printf("fndump    %08x -> %s (%u bytes)\n", at, g_trace_fn_dump_path, g_trace_fn_dump_len);
-            }
+// PATCH, this repository: log every entry into one code-selector address range. This is how "does the program reach
+// this routine at all" becomes answerable in a port whose functions are C++ calls with no instruction fetches to
+// watch. Set from the port's U2_TRACE_FN=<cs>:<lo>:<hi>.
+//
+// It is a function rather than a block inside find() because a call to a function the module already knows no longer
+// goes through find(): x86_call_known goes straight to the translation after checking the overlay table, which is what
+// makes the overlay free. Left inside find() alone it reported ONE routine across an entire create route where
+// stop-at proved dozens were entered, and the truncation looked like a finding.
+void x86_fn_trace_enter(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
+    if (!(g_trace_fn_lo < g_trace_fn_hi && (cs & 0xFFFC) == (g_trace_fn_cs & 0xFFFC) && off >= g_trace_fn_lo
+          && off <= g_trace_fn_hi))
+        return;
+    static long entries = 0;
+    if (++entries <= (long)g_watch_max)
+        std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x\n",
+                     cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
+                     c.r[6], c.r[7], c.r[5], c.sbase[0], c.sbase[3], c.sbase[5]);
+    // Dump the routine's state at the same instant the machine's breakpoint fires, so a comparison of two samples is a
+    // comparison of the same moment. Done once: a per-call dump is a file per iteration and no more truth.
+    static bool dumped = false;
+    if (!dumped && g_trace_fn_dump_path && g_trace_fn_dump_len && g_towns
+        && g_towns->frame >= g_trace_fn_dump_frame) {
+        dumped = true;
+        const uint32_t at = c.sbase[5] + c.r[5] + g_trace_fn_dump_off;
+        std::vector<uint8_t> buf(g_trace_fn_dump_len);
+        g_towns->read_block(at, buf.data(), buf.size());
+        if (FILE* fp = std::fopen(g_trace_fn_dump_path, "wb")) {
+            std::fwrite(buf.data(), 1, buf.size(), fp);
+            std::fclose(fp);
+            std::printf("fndump    %08x -> %s (%u bytes)\n", at, g_trace_fn_dump_path, g_trace_fn_dump_len);
         }
     }
+}
+
+static X86Func find(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
+    x86_fn_trace_enter(c, cs, off, site);
     X86Func f = x86_lookup_cs(cs & 0xFFFC, off);
     if (!f) f = x86_lookup_cs(cs, off);
     if (!f) {
@@ -164,6 +173,7 @@ X86Func x86_shadow(uint16_t cs, uint32_t addr) {
 }
 
 void x86_call_known(X86Cpu& c, uint32_t target, X86Func fn) {
+    x86_fn_trace_enter(c, c.sreg[1], target, target);
     X86Func s = x86_shadow(c.sreg[1], target);
     (s ? s : fn)(c);
 }
