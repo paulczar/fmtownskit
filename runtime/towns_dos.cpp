@@ -636,6 +636,18 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         return;
     case 0x54: {                                    // the table of contents
         const auto& t = disc.tracks();
+        // PATCH, this repository. With no disc opened the track list is empty and front()/back() dereference
+        // nothing: that is a segfault in the host, not a DOS error the program can see. It happened for real in the
+        // ultima-trilogy port once the disc became optional, where a cached run reached the TOC ask and died. Answer
+        // the way an empty drive does, with nothing, and let the caller deal with it.
+        if (t.empty()) {
+            // AH=2 is the error the program's own probe already treats as "no CD", measured at guest 0xe2440-0xe24d7
+            // and recorded further up this function, so the answer is the one it knows how to read rather than a
+            // buffer of invented tracks.
+            if (trace_int) std::fprintf(stderr, "  CD-DA toc: no disc mounted\n");
+            ret = (ret & 0xFFFF00FFu) | 0x0200u;
+            return;
+        }
         std::vector<uint8_t> o(6 + 3 * t.size());
         o[0] = 3;                                   // as RUN386's buffer held it (*not understood*)
         o[1] = (uint8_t)t.front().number;
