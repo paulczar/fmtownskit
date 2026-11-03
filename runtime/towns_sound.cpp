@@ -57,10 +57,9 @@ struct PcmChannel {
     uint16_t step = 0, loopst = 0;
     uint32_t addr = 0;
     bool on = false;
-    // Diagnostics only: how many times this channel has run off the end and wrapped since the CPU last touched it. A
-    // one-shot effect that keeps wrapping is the shape of "the fight sound repeats until something else plays", and the
-    // question worth answering is whether the end flag reached the driver at all.
-    unsigned wraps = 0;
+    // Diagnostics only: how many samples this channel has ended since the CPU last touched it. One line per channel names
+    // the sample that ended, which is what a report about a repeating sound needs.
+    unsigned ended = 0;
 };
 
 // ymfm's view of the machine: its timers and busy flag on the guest clock (its durations are
@@ -124,32 +123,29 @@ static void pcm_sample(Machine& m, SoundChips& s) {
         if (!c.on) continue;
         int sample = snd.wave[(c.addr >> 11) & 0xFFFF];
         if (sample == 0xFF) {
-            // END OF SAMPLE. The chip restarts at the loop address, and the driver is told through a per-channel flag, and
-            // through the interrupt when the mask enables that channel. Evidence rather than inference: this game writes
-            // PCM mask = 80 at frame 1084 while starting channel 7 (on/off = 7F clears bit 7), and channel 7 is the one
-            // observed wrapping at frame 1197. So bit 7 is channel 7, the mask and the flag are per channel, and the event
-            // is this marker. The previous version keyed the flag to a 4 KB bank boundary instead, which never arrives for
-            // a sample shorter than 4 KB, and every one of these effects is: the driver was never told, so it never stopped
-            // the channel and the chip looped the sound for ever. That was the fight sound that repeated until another
-            // sound overwrote the channel.
-            c.addr = (uint32_t)c.loopst << 11;
-            const int again = snd.wave[(c.addr >> 11) & 0xFFFF];
-            if (again == 0xFF) continue;    // looped onto another marker: silent, and nothing to signal. Signalling here
-                                            // would raise the interrupt once per output sample, which is a storm and not
-                                            // a sound.
+            // END OF SAMPLE. The chip jumps to the loop address and the driver is told through a per-channel flag, and
+            // through the interrupt when the mask enables that channel.
+            //
+            // The flag is per channel, not per bank: this game writes PCM mask = 80 at frame 1084 while starting channel 7
+            // (on/off = 7F clears bit 7), and channel 7 is the channel observed restarting at frame 1197. The earlier version
+            // keyed the flag to a 4 KB bank boundary, which a sample shorter than 4 KB never reaches, so the driver was never
+            // told and the sound never ended. Every one of these effects is shorter than 4 KB.
+            //
+            // And the channel stops here. Across three sessions this driver never writes a channel off after the marker,
+            // never reads the status register, and never reads the flags after boot: it does not stop the sample, so on this
+            // chip the marker must be what ends it. Looping at the marker instead is exactly the reported symptom, a sound
+            // that repeats until another sound overwrites the channel.
             snd.pcm_flags |= (uint8_t)(1 << ch);
             if (snd.pcm_mask & (1 << ch)) {
                 snd.pcm_irq = true;
                 m.sound_irq();
             }
-            // The counter answers a different question: did the driver act on that flag? Eight restarts with no register
-            // write in between is about a tenth of a second for a short effect, which is long enough to be a real loop and
-            // short enough to be caught while it is still happening.
-            if (++c.wraps == 8 && m.trace_int)
-                std::fprintf(stderr,
-                             "  PCM ch%d restarted 8 times without a register write at frame %llu (start %u, loop %u, step %u)\n",
-                             ch, (unsigned long long)m.frame, c.start, c.loopst, c.step);
-            sample = again;
+            if (m.trace_int && c.ended++ < 1)
+                std::fprintf(stderr, "  PCM ch%d sample ended at frame %llu (start %u, loop %u, step %u)\n", ch,
+                             (unsigned long long)m.frame, c.start, c.loopst, c.step);
+            c.on = false;
+            c.addr = (uint32_t)c.loopst << 11;
+            continue;
         }
         c.addr += c.step;
         int lv = (c.pan & 0x0F) * c.env, rv = ((c.pan >> 4) & 0x0F) * c.env;
@@ -313,7 +309,7 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         case 3: c.step = (uint16_t)((c.step & 0x00FF) | (d << 8)); break;
         case 4: c.loopst = (uint16_t)((c.loopst & 0xFF00) | d); break;
         case 5: c.loopst = (uint16_t)((c.loopst & 0x00FF) | (d << 8)); break;
-        case 6: c.start = d; c.wraps = 0; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
+        case 6: c.start = d; c.ended = 0; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
         }
         return;
     }
@@ -328,7 +324,7 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
             std::fprintf(stderr, "  PCM on/off = %02X at frame %llu\n", d, (unsigned long long)frame);
         for (int i = 0; i < 8; ++i) {
             s.pcm[i].on = !((d >> i) & 1);
-            s.pcm[i].wraps = 0;
+            s.pcm[i].ended = 0;
             if (!s.pcm[i].on) s.pcm[i].addr = (uint32_t)s.pcm[i].start << (8 + 11);
         }
         return;

@@ -218,6 +218,12 @@ void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
 
 // Take an interrupt now: the handler runs as a call, its iretd returns here.
 static void take(X86Cpu& c, int vec) {
+    // Is anything ever delivered? The vectors installed and the interrupt asserted are the two halves of the question, this
+    // is the join: a delivery names its vector and frame, so a sound interrupt that is never taken shows as an assert with
+    // no matching delivery beside it.
+    static unsigned taken = 0;
+    if (g_towns->trace_int && taken++ < 40)
+        std::fprintf(stderr, "  int taken vec=%02X at frame %llu\n", vec & 0xFF, (unsigned long long)g_towns->frame);
     const towns::IntVector& iv = g_towns->pm_vector[vec];
     uint32_t resume = c.eip;
     push32(c, c.fl);
@@ -236,6 +242,18 @@ static bool in_poll = false;
 
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
+    // Once per run, after the machine has settled: is the poll reached at all, and with what interrupt flag? If this never
+    // appears, nothing calls the poll; if it appears with IF=0, the guest is running with interrupts disabled and no
+    // delivery mechanism can matter.
+    static bool told = false;
+    if (!told && m.frame > 400) {
+        told = true;
+        std::fprintf(stderr, "  poll at frame %llu: IF=%d, sound pcm_irq=%d, vectors:", (unsigned long long)m.frame,
+                     (c.fl & X86_IF) ? 1 : 0, m.sound.pcm_irq ? 1 : 0);
+        for (int i = 0; i < 256; ++i)
+            if (m.pm_vector[i].set) std::fprintf(stderr, " %02X", i);
+        std::fprintf(stderr, "\n");
+    }
     if (in_poll) return;
     in_poll = true;
     m.advance(m.machine_time(c.clocks));
