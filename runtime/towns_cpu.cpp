@@ -216,12 +216,6 @@ void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
 
 // Take an interrupt now: the handler runs as a call, its iretd returns here.
 static void take(X86Cpu& c, int vec) {
-    // Is anything ever delivered? The vectors installed and the interrupt asserted are the two halves of the question, this
-    // is the join: a delivery names its vector and frame, so a sound interrupt that is never taken shows as an assert with
-    // no matching delivery beside it.
-    static unsigned taken = 0;
-    if (g_towns->trace_int && taken++ < 40)
-        std::fprintf(stderr, "  int taken vec=%02X at frame %llu\n", vec & 0xFF, (unsigned long long)g_towns->frame);
     const towns::IntVector& iv = g_towns->pm_vector[vec];
     uint32_t resume = c.eip;
     push32(c, c.fl);
