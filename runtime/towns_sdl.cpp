@@ -253,7 +253,14 @@ void SdlHost::vsync(Machine& m) {
         if (s.tex) SDL_DestroyTexture(s.tex);
         s.tex = SDL_CreateTexture(s.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
         SDL_SetTextureScaleMode(s.tex, SDL_SCALEMODE_NEAREST);
-        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+        // Letterbox rather than integer scale, decided 2026-11-03. INTEGER_SCALE only ever scales by whole numbers,
+        // measured with this SDL build: a 640x480 canvas in a 960x720 window stays 640x480 and gains black borders,
+        // and only 1280x960 makes it grow. That reads as "the window resizes and the picture does not", which is
+        // exactly how it was reported. Letterbox tracks the window at any size and keeps the aspect ratio, so
+        // 1000x700 draws 933x700. The cost is uneven pixels at non-integer scales, which NEAREST filtering keeps hard
+        // edged rather than blurry. Integer scaling is the right answer for someone who wants whole pixels, so if it
+        // is ever wanted back it belongs behind an option rather than as the default.
+        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, SDL_LOGICAL_PRESENTATION_LETTERBOX);
         s.tw = w; s.th = h;
     }
     SDL_UpdateTexture(s.tex, nullptr, s.rgb.data() + (size_t)y * fw + x, fw * 4);
