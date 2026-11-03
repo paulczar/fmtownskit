@@ -52,7 +52,16 @@ struct Stream {
     }
 };
 
-struct PcmChannel { uint8_t env = 0, pan = 0, start = 0; uint16_t step = 0, loopst = 0; uint32_t addr = 0; bool on = false; };
+struct PcmChannel {
+    uint8_t env = 0, pan = 0, start = 0;
+    uint16_t step = 0, loopst = 0;
+    uint32_t addr = 0;
+    bool on = false;
+    // Diagnostics only: how many times this channel has run off the end and wrapped since the CPU last touched it. A
+    // one-shot effect that keeps wrapping is the shape of "the fight sound repeats until something else plays", and the
+    // question worth answering is whether the end flag reached the driver at all.
+    unsigned wraps = 0;
+};
 
 // ymfm's view of the machine: its timers and busy flag on the guest clock (its durations are
 // the chip's 8 MHz clocks, two of the CPU's each), its interrupt into IRQ13.
@@ -115,6 +124,14 @@ static void pcm_sample(Machine& m, SoundChips& s) {
         }
         int sample = snd.wave[(c.addr >> 11) & 0xFFFF];
         if (sample == 0xFF) {
+            // The chip loops on its own; stopping is the driver's job, and the driver only learns of the end through the
+            // flag and interrupt below. So a channel that keeps wrapping is a channel whose driver never stopped it,
+            // and printing that is the difference between "the port loops a sound" and "the port never told the driver
+            // the sound ended". Eight wraps is about a tenth of a second for a short effect, so it cannot fire on a
+            // sample that is merely looping by design and about to be replaced.
+            if (++c.wraps == 8 && m.trace_int)
+                std::fprintf(stderr, "  PCM ch%d wrapped 8 times without a register write (start %u, loop %u, step %u)\n",
+                             ch, c.start, c.loopst, c.step);
             c.addr = (uint32_t)c.loopst << 11;
             sample = snd.wave[(c.addr >> 11) & 0xFFFF];
             if (sample == 0xFF) continue;               // looped onto a loop mark: silent
@@ -265,7 +282,7 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         case 3: c.step = (uint16_t)((c.step & 0x00FF) | (d << 8)); break;
         case 4: c.loopst = (uint16_t)((c.loopst & 0xFF00) | d); break;
         case 5: c.loopst = (uint16_t)((c.loopst & 0x00FF) | (d << 8)); break;
-        case 6: c.start = d; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
+        case 6: c.start = d; c.wraps = 0; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
         }
         return;
     }
@@ -278,6 +295,7 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         sound.pcm_onoff = d;
         for (int i = 0; i < 8; ++i) {
             s.pcm[i].on = !((d >> i) & 1);
+            s.pcm[i].wraps = 0;
             if (!s.pcm[i].on) s.pcm[i].addr = (uint32_t)s.pcm[i].start << (8 + 11);
         }
         return;
