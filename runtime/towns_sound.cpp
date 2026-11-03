@@ -114,34 +114,34 @@ static void pcm_sample(Machine& m, SoundChips& s) {
     for (int ch = 0; ch < 8 && (snd.pcm_ctrl & 0x80); ++ch) {
         PcmChannel& c = s.pcm[ch];
         if (!c.on) continue;
-        if (((c.addr >> 11) & 0xFFF) == 0xFFF) {        // the last byte of a 4 KB block
-            int bank = (int)((c.addr >> 11) / 0x2000);
-            // The flag is a fact about the chip and is set whether or not anybody asked to be interrupted. The mask only
-            // decides whether that flag also pulls the IRQ line. Keeping the flag inside the mask test made both depend on
-            // it, so a driver that polls the status register saw nothing at all, never learned its sample had ended, and the
-            // chip looped it for ever. Measured 2026-11-03: this game sets the mask to 00 at frame 97 and never enables an
-            // interrupt, so it is exactly that kind of driver, and the symptom was a fight sound repeating until another
+        int sample = snd.wave[(c.addr >> 11) & 0xFFFF];
+        if (sample == 0xFF) {
+            // END OF SAMPLE. The chip restarts at the loop address, and the driver is told through a per-channel flag, and
+            // through the interrupt when the mask enables that channel. Evidence rather than inference: this game writes
+            // PCM mask = 80 at frame 1084 while starting channel 7 (on/off = 7F clears bit 7), and channel 7 is the one
+            // observed wrapping at frame 1197. So bit 7 is channel 7, the mask and the flag are per channel, and the event
+            // is this marker. The previous version keyed the flag to a 4 KB bank boundary instead, which never arrives for
+            // a sample shorter than 4 KB, and every one of these effects is: the driver was never told, so it never stopped
+            // the channel and the chip looped the sound for ever. That was the fight sound that repeated until another
             // sound overwrote the channel.
-            snd.pcm_flags |= (uint8_t)(1 << bank);
-            if (snd.pcm_mask & (1 << bank)) {
+            c.addr = (uint32_t)c.loopst << 11;
+            const int again = snd.wave[(c.addr >> 11) & 0xFFFF];
+            if (again == 0xFF) continue;    // looped onto another marker: silent, and nothing to signal. Signalling here
+                                            // would raise the interrupt once per output sample, which is a storm and not
+                                            // a sound.
+            snd.pcm_flags |= (uint8_t)(1 << ch);
+            if (snd.pcm_mask & (1 << ch)) {
                 snd.pcm_irq = true;
                 m.sound_irq();
             }
-        }
-        int sample = snd.wave[(c.addr >> 11) & 0xFFFF];
-        if (sample == 0xFF) {
-            // The chip loops on its own; stopping is the driver's job, and the driver only learns of the end through the
-            // flag and interrupt below. So a channel that keeps wrapping is a channel whose driver never stopped it,
-            // and printing that is the difference between "the port loops a sound" and "the port never told the driver
-            // the sound ended". Eight wraps is about a tenth of a second for a short effect, so it cannot fire on a
-            // sample that is merely looping by design and about to be replaced.
+            // The counter answers a different question: did the driver act on that flag? Eight restarts with no register
+            // write in between is about a tenth of a second for a short effect, which is long enough to be a real loop and
+            // short enough to be caught while it is still happening.
             if (++c.wraps == 8 && m.trace_int)
                 std::fprintf(stderr,
-                             "  PCM ch%d wrapped 8 times without a register write at frame %llu (start %u, loop %u, step %u)\n",
+                             "  PCM ch%d restarted 8 times without a register write at frame %llu (start %u, loop %u, step %u)\n",
                              ch, (unsigned long long)m.frame, c.start, c.loopst, c.step);
-            c.addr = (uint32_t)c.loopst << 11;
-            sample = snd.wave[(c.addr >> 11) & 0xFFFF];
-            if (sample == 0xFF) continue;               // looped onto a loop mark: silent
+            sample = again;
         }
         c.addr += c.step;
         int lv = (c.pan & 0x0F) * c.env, rv = ((c.pan >> 4) & 0x0F) * c.env;
