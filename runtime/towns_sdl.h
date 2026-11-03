@@ -17,6 +17,7 @@
 //             right buttons), the host's pointer hidden over the window
 #pragma once
 #include "towns.h"
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -27,7 +28,21 @@ struct SdlOptions {
     std::string title = "FM Towns";
     int scale = 0;                  // 0: the largest whole scale the desktop has room for
     bool fullscreen = false;
+    // Whole multiples by default, with the window snapped to match, so a drag always moves the picture and every
+    // source pixel is the same size on screen. Letterbox fills whatever the window is and keeps the aspect ratio,
+    // which trades even pixels for a full window.
+    bool letterbox = false;
 };
+
+// The whole-multiple scale a window of this size rounds to, for the default presentation. Integer scaling on its own
+// does nothing between one multiple and the next, so the window is asked to follow the scale instead. Each axis takes
+// its nearest whole multiple and the larger of the two wins, so dragging bigger grows the picture rather than dropping
+// it back a step: 1000x700 over a 640x480 canvas gives 2, and a 1280x960 window. It lives here rather than inside the
+// renderer so a test can call it with no display at all.
+inline int sdl_snap_scale(int ww, int wh, int cw, int ch) {
+    if (cw <= 0 || ch <= 0) return 1;
+    return std::max(1, std::max((ww + cw / 2) / cw, (wh + ch / 2) / ch));
+}
 
 class SdlHost {
 public:

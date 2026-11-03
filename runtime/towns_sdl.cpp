@@ -20,6 +20,7 @@ struct SdlHost::Impl {
     std::vector<int16_t> sound;
     uint64_t next_ns = 0;                   // the pace without sound: the next frame's time
     std::string title;
+    bool letterbox = false;                 // fill the window instead of snapping it to whole multiples
     int shown_rate = 0;                     // the CPU's rate the title shows
     float mx = 0, my = 0;                   // the host mouse's movement not yet given, in frame pixels
     ~Impl() {
@@ -39,6 +40,7 @@ bool SdlHost::open(const SdlOptions& o, std::string& err) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) { err = SDL_GetError(); return false; }
     p_ = std::make_unique<Impl>();
     p_->title = o.title;
+    p_->letterbox = o.letterbox;
     int w = 640, h = 480, scale = o.scale;
     if (scale <= 0) {
         SDL_Rect r;
@@ -249,18 +251,33 @@ void SdlHost::vsync(Machine& m) {
     m.render(s.rgb, fw, fh);
     m.display_area(x, y, w, h);
     int cw = std::max(w, 640), ch = std::max(h, 480);
+    // Whole-pixel scaling, with the window following the scale rather than the other way round. INTEGER_SCALE on its
+    // own does nothing between one whole multiple and the next, which is what "the graphics do not scale" was: a
+    // 640x480 picture sitting unchanged in a 960x720 window with black around it. Snapping means a drag to 1000x700
+    // lands on 1280x960, so the picture always moves and every source pixel is the same size on screen. `letterbox`
+    // is the other answer, for anyone who would rather fill the window and accept uneven pixels.
+    if (!s.letterbox) {
+        int ww = 0, wh = 0;
+        SDL_GetWindowSize(s.win, &ww, &wh);
+        // Each axis rounded to its nearest whole multiple, and the larger of the two taken, so dragging bigger grows
+        // the picture instead of dropping it back down a step. Clamped to the desktop, so a small screen cannot ask
+        // for a window that will not fit.
+        int k = sdl_snap_scale(ww, wh, cw, ch);
+        SDL_Rect ub;
+        if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(s.win), &ub)) {
+            int cap = std::min(ub.w / cw, ub.h / ch);
+            if (cap >= 1 && k > cap) k = cap;
+        }
+        if (ww != cw * k || wh != ch * k) SDL_SetWindowSize(s.win, cw * k, ch * k);
+    }
     if (w != s.tw || h != s.th) {
         if (s.tex) SDL_DestroyTexture(s.tex);
         s.tex = SDL_CreateTexture(s.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
         SDL_SetTextureScaleMode(s.tex, SDL_SCALEMODE_NEAREST);
-        // Letterbox rather than integer scale, decided 2026-11-03. INTEGER_SCALE only ever scales by whole numbers,
-        // measured with this SDL build: a 640x480 canvas in a 960x720 window stays 640x480 and gains black borders,
-        // and only 1280x960 makes it grow. That reads as "the window resizes and the picture does not", which is
-        // exactly how it was reported. Letterbox tracks the window at any size and keeps the aspect ratio, so
-        // 1000x700 draws 933x700. The cost is uneven pixels at non-integer scales, which NEAREST filtering keeps hard
-        // edged rather than blurry. Integer scaling is the right answer for someone who wants whole pixels, so if it
-        // is ever wanted back it belongs behind an option rather than as the default.
-        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+        // The mode follows the option: whole multiples by default, letterbox when asked for. The window snapping above
+        // keeps an integer-scaled picture filling its window, so this only has to pick the mode.
+        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, s.letterbox ? SDL_LOGICAL_PRESENTATION_LETTERBOX
+                                                                  : SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
         s.tw = w; s.th = h;
     }
     SDL_UpdateTexture(s.tex, nullptr, s.rgb.data() + (size_t)y * fw + x, fw * 4);
