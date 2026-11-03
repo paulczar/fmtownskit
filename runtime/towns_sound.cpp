@@ -116,8 +116,14 @@ static void pcm_sample(Machine& m, SoundChips& s) {
         if (!c.on) continue;
         if (((c.addr >> 11) & 0xFFF) == 0xFFF) {        // the last byte of a 4 KB block
             int bank = (int)((c.addr >> 11) / 0x2000);
+            // The flag is a fact about the chip and is set whether or not anybody asked to be interrupted. The mask only
+            // decides whether that flag also pulls the IRQ line. Keeping the flag inside the mask test made both depend on
+            // it, so a driver that polls the status register saw nothing at all, never learned its sample had ended, and the
+            // chip looped it for ever. Measured 2026-11-03: this game sets the mask to 00 at frame 97 and never enables an
+            // interrupt, so it is exactly that kind of driver, and the symptom was a fight sound repeating until another
+            // sound overwrote the channel.
+            snd.pcm_flags |= (uint8_t)(1 << bank);
             if (snd.pcm_mask & (1 << bank)) {
-                snd.pcm_flags |= (uint8_t)(1 << bank);
                 snd.pcm_irq = true;
                 m.sound_irq();
             }
@@ -130,8 +136,9 @@ static void pcm_sample(Machine& m, SoundChips& s) {
             // the sound ended". Eight wraps is about a tenth of a second for a short effect, so it cannot fire on a
             // sample that is merely looping by design and about to be replaced.
             if (++c.wraps == 8 && m.trace_int)
-                std::fprintf(stderr, "  PCM ch%d wrapped 8 times without a register write (start %u, loop %u, step %u)\n",
-                             ch, c.start, c.loopst, c.step);
+                std::fprintf(stderr,
+                             "  PCM ch%d wrapped 8 times without a register write at frame %llu (start %u, loop %u, step %u)\n",
+                             ch, (unsigned long long)m.frame, c.start, c.loopst, c.step);
             c.addr = (uint32_t)c.loopst << 11;
             sample = snd.wave[(c.addr >> 11) & 0xFFFF];
             if (sample == 0xFF) continue;               // looped onto a loop mark: silent
@@ -251,6 +258,10 @@ static void cd_db(Machine& m, float db) {
     m.sound.cd_gain[ch] = db > 0 ? 0.0f : std::pow(10.0f, db / 20.0f);
 }
 
+// Counts the diagnostic lines below so one session cannot flood the log with them. File scope rather than a member: it is
+// a property of the instrument, not of the machine, and it must not survive into the machine's own state.
+static unsigned pcm_notes = 0;
+
 void Machine::sound_out8(uint32_t port, uint8_t d) {
     SoundChips& s = *chips;
     switch (port) {
@@ -271,7 +282,14 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         else if (d & 8) cd_db(*this, 0);
         else if (d & 0x10) cd_db(*this, -32.0f);
         return;
-    case 0x4EA: sound.pcm_mask = d; return;
+    case 0x4EA:
+        sound.pcm_mask = d;
+        // The mask says which channels' end-of-bank flags interrupt the CPU. A driver that intends to stop a one-shot
+        // sample sets it; one that polls the flags register never does. Printing the first few writes answers which kind
+        // of driver this is, which decides what "the sample never stopped" actually means.
+        if (trace_int && pcm_notes++ < 20)
+            std::fprintf(stderr, "  PCM mask = %02X at frame %llu\n", d, (unsigned long long)frame);
+        return;
     case 0x4EC: return;             // LED, mute
     case 0x4F0: case 0x4F1: case 0x4F2: case 0x4F3: case 0x4F4: case 0x4F5: case 0x4F6: {
         PcmChannel& c = s.pcm[s.cbank];
@@ -293,6 +311,8 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         return;
     case 0x4F8:
         sound.pcm_onoff = d;
+        if (trace_int && pcm_notes++ < 40)
+            std::fprintf(stderr, "  PCM on/off = %02X at frame %llu\n", d, (unsigned long long)frame);
         for (int i = 0; i < 8; ++i) {
             s.pcm[i].on = !((d >> i) & 1);
             s.pcm[i].wraps = 0;
