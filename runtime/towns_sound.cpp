@@ -105,7 +105,15 @@ void Machine::sound_start() {
     chips->fm.reset();
 }
 
-void Machine::sound_irq() { raise_irq(13, sound.fm_irq || sound.pcm_irq); }
+// Counts the diagnostic lines the sound instruments print, so one session cannot flood the log with them. File scope
+// rather than a member: it is a property of the instrument, not of the machine, and it must not become machine state.
+static unsigned pcm_notes = 0;
+
+void Machine::sound_irq() {
+    if (trace_int && sound.pcm_irq && pcm_notes++ < 60)
+        std::fprintf(stderr, "  PCM irq asserted at frame %llu\n", (unsigned long long)frame);
+    raise_irq(13, sound.fm_irq || sound.pcm_irq);
+}
 
 // ---- the RF5C68 ------------------------------------------------------------------------------
 static void pcm_sample(Machine& m, SoundChips& s) {
@@ -237,13 +245,22 @@ uint8_t Machine::sound_in8(uint32_t port) {
     case 0x4E2: return sound.volume[sound.volume_sel & 3];
     case 0x4E3: return sound.volume_sel;
     case 0x4E8: return 1;
-    case 0x4E9: return (uint8_t)((sound.fm_irq ? 0x01 : 0) | (sound.pcm_irq ? 0x08 : 0));
+    case 0x4E9:
+        // The status register the interrupt handler reads to tell FM from PCM. Logging the reads answers whether a handler
+        // ran at all after the end-of-sample flag, which is the difference between "the chip did not signal" and "the chip
+        // signalled and the driver ignored it".
+        if (trace_int && pcm_notes++ < 60)
+            std::fprintf(stderr, "  PCM status read = %02X at frame %llu\n",
+                         (int)((sound.fm_irq ? 0x01 : 0) | (sound.pcm_irq ? 0x08 : 0)), (unsigned long long)frame);
+        return (uint8_t)((sound.fm_irq ? 0x01 : 0) | (sound.pcm_irq ? 0x08 : 0));
     case 0x4EA: return sound.pcm_mask;
     case 0x4EB: {
         uint8_t r = sound.pcm_flags;
         sound.pcm_flags = 0;
         sound.pcm_irq = false;
         sound_irq();
+        if (trace_int && pcm_notes++ < 60)
+            std::fprintf(stderr, "  PCM flags read = %02X at frame %llu\n", r, (unsigned long long)frame);
         return r;
     }
     default: return 0;
@@ -257,10 +274,6 @@ static void cd_db(Machine& m, float db) {
     cd_catch_up(m, *m.chips, m.now);
     m.sound.cd_gain[ch] = db > 0 ? 0.0f : std::pow(10.0f, db / 20.0f);
 }
-
-// Counts the diagnostic lines below so one session cannot flood the log with them. File scope rather than a member: it is
-// a property of the instrument, not of the machine, and it must not survive into the machine's own state.
-static unsigned pcm_notes = 0;
 
 void Machine::sound_out8(uint32_t port, uint8_t d) {
     SoundChips& s = *chips;
