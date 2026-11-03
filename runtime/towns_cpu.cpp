@@ -201,12 +201,16 @@ bool x86_lsl(X86Cpu&, uint32_t sel, uint32_t& limit) {
 uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_r; if ((port & ~3u) == 0x4D0) ++g_towns->access.pad_r; }
+    // Poll at the I/O boundary, which is the only place this port's clock moves. What the poll is allowed to do is decided
+    // inside it, by the two flags: neither is on by default, so this costs a call and changes nothing unless asked.
+    x86_poll(c);
     return g_towns->in(port, n);
 }
 
 void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_w; if (port == 0x6C) ++g_towns->access.wait_w; }
+    x86_poll(c);
     g_towns->out(port, n, v);
 }
 
@@ -230,16 +234,23 @@ static void take(X86Cpu& c, int vec) {
     if (c.eip != resume) x86_fault(c, resume, "an interrupt handler returned elsewhere");
 }
 
+// Guards against a handler's own I/O re-entering the poll: taking an interrupt runs guest code, that code touches ports, and
+// the poll would then try to take another interrupt inside the first one's delivery.
+static bool in_poll = false;
+
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
+    if (!m.tick_poll && !m.irq_poll) return;   // off unless asked: see the comment on the flags in towns.h
+    if (in_poll) return;
+    in_poll = true;
     m.advance(m.machine_time(c.clocks));
-    while (c.fl & X86_IF) {
+    while (m.irq_poll && (c.fl & X86_IF)) {
         int vec = m.pending_irq();
         if (vec < 0) break;
         take(c, vec);
         m.advance(m.machine_time(c.clocks));
     }
-    while (c.fl & X86_IF) {             // the timer BIOS's callbacks (int 97h), as its interrupt calls them
+    while (m.tick_poll && (c.fl & X86_IF)) {             // the timer BIOS's callbacks (int 97h), as its interrupt calls them
         int n = m.t97_due();
         if (n < 0) break;
         const towns::Machine::Timer97& t = m.t97[n];
@@ -262,6 +273,7 @@ void x86_poll(X86Cpu& c) {
     uint64_t next = m.next_event();
     int64_t left = (int64_t)(m.cpu_time(next) - c.clocks);
     c.budget = (int32_t)(left < 64 ? 64 : left > (1 << 30) ? (1 << 30) : left);
+    in_poll = false;
 }
 
 void x86_int(X86Cpu& c, int n, uint32_t next) {

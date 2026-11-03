@@ -299,6 +299,10 @@ public:
 
     // tracing
     bool trace_io = false, trace_int = false;
+    // The two halves of the poll, switched independently for the experiment of 2026-11-03. `tick_poll` runs the timer BIOS's
+    // 10 ms callbacks and `irq_poll` delivers hardware interrupts; both default off, because nothing has ever called the poll
+    // and turning it on wholesale silenced the FM music. One at a time is the only way to learn which half matters.
+    bool tick_poll = false, irq_poll = false;
     std::vector<uint8_t> font;          // FMT_FNT.ROM if given (not needed so far)
     std::vector<uint8_t> font20;        // FMT_F20.ROM, the 512 KB 20-dot font at 0xC2180000
 };
