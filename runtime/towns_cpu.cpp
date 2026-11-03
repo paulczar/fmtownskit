@@ -201,12 +201,18 @@ bool x86_lsl(X86Cpu&, uint32_t sel, uint32_t& limit) {
 uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_r; if ((port & ~3u) == 0x4D0) ++g_towns->access.pad_r; }
+    // Hardware interrupts are delivered here, at the point time actually moves. The guest's clock only advances on I/O in
+    // this port, so an I/O access is the only safe instruction boundary at which a pending interrupt can be taken without
+    // inventing a time base. Before this, nothing called the poll at all: no hardware interrupt had ever been delivered,
+    // and the sound driver's end-of-sample handler had never run, which is why a sample could loop for ever.
+    x86_poll(c);
     return g_towns->in(port, n);
 }
 
 void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_w; if (port == 0x6C) ++g_towns->access.wait_w; }
+    x86_poll(c);
     g_towns->out(port, n, v);
 }
 
@@ -224,8 +230,14 @@ static void take(X86Cpu& c, int vec) {
     if (c.eip != resume) x86_fault(c, resume, "an interrupt handler returned elsewhere");
 }
 
+// Guards against a handler's own I/O re-entering the poll: taking an interrupt runs guest code, that code touches ports,
+// and the poll would then try to take another interrupt inside the first one's delivery.
+static bool in_poll = false;
+
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
+    if (in_poll) return;
+    in_poll = true;
     m.advance(m.machine_time(c.clocks));
     while (c.fl & X86_IF) {
         int vec = m.pending_irq();
@@ -233,7 +245,10 @@ void x86_poll(X86Cpu& c) {
         take(c, vec);
         m.advance(m.machine_time(c.clocks));
     }
+    in_poll = false;
+    in_poll = false;
     while (c.fl & X86_IF) {             // the timer BIOS's callbacks (int 97h), as its interrupt calls them
+        in_poll = true;
         int n = m.t97_due();
         if (n < 0) break;
         const towns::Machine::Timer97& t = m.t97[n];
@@ -252,6 +267,7 @@ void x86_poll(X86Cpu& c) {
         for (int k = 0; k < 6; ++k) x86_load_seg(c, k, s[k]);
         c.fl = fl;
         m.advance(m.machine_time(c.clocks));
+        in_poll = false;
     }
     uint64_t next = m.next_event();
     int64_t left = (int64_t)(m.cpu_time(next) - c.clocks);
