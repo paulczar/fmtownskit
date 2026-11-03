@@ -8,15 +8,11 @@
 // YM3438's timers), which also answers the sound's ports.
 #include "towns.h"
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 
 namespace towns {
 
 // ---- the 8259s ----------------------------------------------------------------------------
-// Counts the dropped-interrupt diagnostics so a session cannot flood the log with them. File scope: it is a property of
-// the instrument, not of the machine.
-static unsigned irq_notes = 0;
 static void pic_write(Pic& p, int a, uint8_t v) {
     if (a == 0) {
         if (v & 0x10) {                         // ICW1
@@ -61,16 +57,6 @@ void Machine::raise_irq(int irq, bool level) {
 int Machine::pending_irq() {
     Pic& m = pic[0];
     Pic& s = pic[1];
-    // Once per run, what the program has actually installed. It answers whether the sound line has a handler at all, which
-    // decides between an interrupt-wiring fault and a missing handler, and it costs one line.
-    static bool dumped = false;
-    if (trace_int && !dumped && frame > 400) {
-        dumped = true;
-        std::fprintf(stderr, "  IRQ vectors installed (master base %02X, slave base %02X):", m.base & 0xFF, s.base & 0xFF);
-        for (int i = 0; i < 256; ++i)
-            if (pm_vector[i].set) std::fprintf(stderr, " %02X", i);
-        std::fprintf(stderr, "\n");
-    }
     int sirq = -1;
     for (int i = 0; i < 8; ++i) {
         if (s.isr & (1 << i)) break;
@@ -82,26 +68,7 @@ int Machine::pending_irq() {
         if (req && !(m.imr & (1 << i))) { mirq = i; break; }
         if ((m.isr & (1 << i)) && i != 7) break;
     }
-    if (mirq < 0) {
-        // The PCM line is IRQ13, which is the slave's IRQ5. If it is asking and we are returning -1, the request is being
-        // dropped, and the two reasons look identical from the driver's side: the line is masked, or no protected-mode
-        // handler was ever installed for its vector, which this runtime treats as masked. Saying which is the difference
-        // between fixing the interrupt wiring and fixing the driver.
-        if (trace_int && (s.irr & 0x20) && irq_notes++ < 40) {
-            if (s.imr & 0x20)
-                std::fprintf(stderr, "  PCM irq dropped: slave IRQ5 masked at frame %llu\n", (unsigned long long)frame);
-            else if (!pm_vector[s.base + 5].set)
-                std::fprintf(stderr, "  PCM irq dropped: no protected-mode handler for vector %02X at frame %llu\n",
-                             (s.base + 5) & 0xFF, (unsigned long long)frame);
-            else if ((m.imr & 0x02) || (m.isr & 0x02))
-                std::fprintf(stderr, "  PCM irq dropped: master IRQ1 masked or in service at frame %llu\n",
-                             (unsigned long long)frame);
-            else
-                std::fprintf(stderr, "  PCM irq dropped: cascaded line not taken at frame %llu\n",
-                             (unsigned long long)frame);
-        }
-        return -1;
-    }
+    if (mirq < 0) return -1;
     m.isr |= (uint8_t)(1 << mirq);
     if (mirq == 7) { s.isr |= (uint8_t)(1 << sirq); return s.base + sirq; }
     return m.base + mirq;
