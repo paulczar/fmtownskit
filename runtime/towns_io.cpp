@@ -283,20 +283,24 @@ uint8_t Machine::in8(uint32_t port) {
 // counted from the machine's own frame clock, the chip traffic begins in earnest and whether it ever goes quiet again.
 // A register write is the only sign a note was asked for, so bucketing them by second answers the one question a
 // listener cannot answer from outside: whether the silence before the music is the program waiting or the port's mixer.
-static void fm_trace(uint64_t frame) {
-    static unsigned long long bucket = ~0ULL, hits = 0;
+static void fm_trace(uint64_t frame, int kind) {
+    static unsigned long long bucket = ~0ULL, hits[2] = {0, 0};
     unsigned long long b = frame / 61;                   // the machine's VSYNC rate, so one bucket is one second
     if (b != bucket) {
-        if (hits) std::fprintf(stderr, "  FM %llus %llu writes\n", bucket, hits);
+        if (hits[0]) std::fprintf(stderr, "  FM %llus %llu writes\n", bucket, hits[0]);
+        if (hits[1]) std::fprintf(stderr, "  PCM %llus %llu writes\n", bucket, hits[1]);
         bucket = b;
-        hits = 0;
+        hits[0] = hits[1] = 0;
     }
-    ++hits;
+    ++hits[kind];
 }
 
 void Machine::out8(uint32_t port, uint8_t d) {
     Video& v = video;
-    if (trace_int && port >= 0x4C0 && port <= 0x4FF) fm_trace(frame);
+    // Split by chip, because the two answer different questions and the census used to add them together: the RF5C68's
+    // registers are 0x4F0-0x4F8, everything else in the span is the YM3438's. A number that mixed them could not say which
+    // chip a silent mixer was failing to hear.
+    if (trace_int && port >= 0x4C0 && port <= 0x4FF) fm_trace(frame, port >= 0x4F0 && port <= 0x4F8 ? 1 : 0);
     switch (port) {
     case 0x00: pic_write(pic[0], 0, d); return;
     case 0x02: pic_write(pic[0], 2, d); return;

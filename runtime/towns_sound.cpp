@@ -94,6 +94,10 @@ struct SoundChips {
     Stream cd_out{kCdRate};
     // the mix
     uint64_t k = 0;                     // the next output frame
+    // Diagnostics: how many NON-ZERO samples each source produced in the current second. The mixer can be silent while a
+    // chip is busy, and the census of register writes cannot tell which source is the silent one. This can.
+    uint64_t nz_second = ~0ULL;
+    uint64_t nz[3] = {0, 0, 0};          // FM, PCM, CD
 };
 
 void SoundChipsFree::operator()(SoundChips* p) const { delete p; }
@@ -156,6 +160,7 @@ static void pcm_sample(Machine& m, SoundChips& s) {
     left = std::clamp(left & ~63, -32768, 32767);
     right = std::clamp(right & ~63, -32768, 32767);
     s.pcm_out.push(left / 32768.0f, right / 32768.0f);
+    if (left || right) ++s.nz[1];
 }
 
 // ---- the YM3438 ------------------------------------------------------------------------------
@@ -164,6 +169,7 @@ static void fm_catch_up(SoundChips& s, uint64_t to) {
     while (s.fm_next <= to) {
         s.fm.generate(&o, 1);
         s.fm_out.push(o.data[0] / 32768.0f, o.data[1] / 32768.0f);
+        if (o.data[0] || o.data[1]) ++s.nz[0];
         s.fm_next = at(++s.fm_n, kFmRate);
     }
 }
@@ -183,6 +189,7 @@ static void cd_catch_up(Machine& m, SoundChips& s, uint64_t to) {
         const uint8_t* p = s.sector + s.sector_pos++ * 4;
         int16_t l = (int16_t)(p[0] | p[1] << 8), r = (int16_t)(p[2] | p[3] << 8);
         s.cd_out.push(l / 32768.0f * m.sound.cd_gain[0], r / 32768.0f * m.sound.cd_gain[1]);
+        if (l || r) ++s.nz[2];
     }
 }
 
@@ -335,6 +342,23 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
 // ---- the mix ---------------------------------------------------------------------------------
 void Machine::audio_take(std::vector<int16_t>& out) {
     SoundChips& s = *chips;
+    // Once a second, say which sources actually produced samples. A silent mixer with busy chips is the shape of "the music
+    // never plays", and this names the source instead of leaving three candidates.
+    if (trace_int) {
+        const uint64_t sec = now / kClock;
+        static uint64_t printed = ~0ULL;
+        if (sec != s.nz_second) {
+            // Printed when any source produced something, and otherwise once every thirty seconds, so a silent stretch is
+            // visible without filling the log and the moment sound starts is never missed.
+            if ((s.nz[0] || s.nz[1] || s.nz[2] || sec % 30 == 0) && printed != sec) {
+                printed = sec;
+                std::fprintf(stderr, "  AUDIO %llus fm=%llu pcm=%llu cd=%llu samples\n", (unsigned long long)s.nz_second,
+                             (unsigned long long)s.nz[0], (unsigned long long)s.nz[1], (unsigned long long)s.nz[2]);
+            }
+            s.nz_second = sec;
+            s.nz[0] = s.nz[1] = s.nz[2] = 0;
+        }
+    }
     out.clear();
     fm_catch_up(s, now);
     cd_catch_up(*this, s, now);
