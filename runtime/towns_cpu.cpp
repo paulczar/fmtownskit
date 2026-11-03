@@ -201,16 +201,12 @@ bool x86_lsl(X86Cpu&, uint32_t sel, uint32_t& limit) {
 uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_r; if ((port & ~3u) == 0x4D0) ++g_towns->access.pad_r; }
-    // Poll at the I/O boundary, which is the only place this port's clock moves. What the poll is allowed to do is decided
-    // inside it, by the two flags: neither is on by default, so this costs a call and changes nothing unless asked.
-    x86_poll(c);
     return g_towns->in(port, n);
 }
 
 void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_w; if (port == 0x6C) ++g_towns->access.wait_w; }
-    x86_poll(c);
     g_towns->out(port, n, v);
 }
 
@@ -234,7 +230,10 @@ static bool in_poll = false;
 
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
-    if (!m.tick_poll && !m.irq_poll) return;   // off unless asked: see the comment on the flags in towns.h
+    // The poll is called by the recompiled code (X86_POLL, 13,938 sites) when the instruction budget runs out, so it has always
+    // been the port's time base: its advance() is what moves the machine's clock. The two optional halves are the interrupt
+    // delivery and the timer BIOS's callbacks, and each is off unless asked. An earlier version returned before the advance
+    // when both were off, which silently removed the time base and stopped the music.
     if (in_poll) return;
     in_poll = true;
     m.advance(m.machine_time(c.clocks));
