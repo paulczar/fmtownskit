@@ -21,6 +21,8 @@ struct SdlHost::Impl {
     uint64_t next_ns = 0;                   // the pace without sound: the next frame's time
     std::string title;
     bool letterbox = false;                 // fill the window instead of snapping it to whole multiples
+    bool resize_pending = false;            // a resize happened and the window has not settled yet
+    uint64_t resize_ms = 0;                 // when it last moved, so the snap waits for the drag to finish
     int shown_rate = 0;                     // the CPU's rate the title shows
     float mx = 0, my = 0;                   // the host mouse's movement not yet given, in frame pixels
     ~Impl() {
@@ -177,6 +179,21 @@ bool towns_key_scancode(int sdl_scancode, int sdl_key, uint8_t& scan, uint8_t& a
     return towns_key(k, scan, ascii);
 }
 
+// Snap a window to the nearest whole multiple of the canvas, clamped to the desktop's usable bounds. Called when a
+// resize finishes, never per frame: see the WINDOW_RESIZED case, where the difference between those two is the
+// difference between a scalable window and one that cannot be resized at all.
+static void snap_window(SDL_Window* win, int cw, int ch) {
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(win, &ww, &wh);
+    int k = sdl_snap_scale(ww, wh, cw, ch);
+    SDL_Rect ub;
+    if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(win), &ub)) {
+        int cap = std::min(ub.w / cw, ub.h / ch);
+        if (cap >= 1 && k > cap) k = cap;
+    }
+    if (ww != cw * k || wh != ch * k) SDL_SetWindowSize(win, cw * k, ch * k);
+}
+
 void SdlHost::vsync(Machine& m) {
     Impl& s = *p_;
     SDL_Event e;
@@ -219,6 +236,16 @@ void SdlHost::vsync(Machine& m) {
         }
         case SDL_EVENT_WINDOW_MOUSE_ENTER: SDL_HideCursor(); break;
         case SDL_EVENT_WINDOW_MOUSE_LEAVE: SDL_ShowCursor(); break;
+        case SDL_EVENT_WINDOW_RESIZED: {
+            // Mark the window as unsettled and let the snap happen later, once it stops moving. Snapping here would act
+            // mid-drag, and snapping every frame is worse still: that forces the size at each VSYNC, so every drag is
+            // undone sixteen milliseconds later and the window cannot be resized at all. That was the first attempt.
+            if (s.letterbox) break;
+            if (SDL_GetWindowFlags(s.win) & SDL_WINDOW_FULLSCREEN) break;
+            s.resize_pending = true;
+            s.resize_ms = SDL_GetTicks();
+            break;
+        }
         case SDL_EVENT_GAMEPAD_ADDED:
             if (SDL_Gamepad* g = SDL_OpenGamepad(e.gdevice.which)) s.pads.push_back(g);
             break;
@@ -251,25 +278,6 @@ void SdlHost::vsync(Machine& m) {
     m.render(s.rgb, fw, fh);
     m.display_area(x, y, w, h);
     int cw = std::max(w, 640), ch = std::max(h, 480);
-    // Whole-pixel scaling, with the window following the scale rather than the other way round. INTEGER_SCALE on its
-    // own does nothing between one whole multiple and the next, which is what "the graphics do not scale" was: a
-    // 640x480 picture sitting unchanged in a 960x720 window with black around it. Snapping means a drag to 1000x700
-    // lands on 1280x960, so the picture always moves and every source pixel is the same size on screen. `letterbox`
-    // is the other answer, for anyone who would rather fill the window and accept uneven pixels.
-    if (!s.letterbox) {
-        int ww = 0, wh = 0;
-        SDL_GetWindowSize(s.win, &ww, &wh);
-        // Each axis rounded to its nearest whole multiple, and the larger of the two taken, so dragging bigger grows
-        // the picture instead of dropping it back down a step. Clamped to the desktop, so a small screen cannot ask
-        // for a window that will not fit.
-        int k = sdl_snap_scale(ww, wh, cw, ch);
-        SDL_Rect ub;
-        if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(s.win), &ub)) {
-            int cap = std::min(ub.w / cw, ub.h / ch);
-            if (cap >= 1 && k > cap) k = cap;
-        }
-        if (ww != cw * k || wh != ch * k) SDL_SetWindowSize(s.win, cw * k, ch * k);
-    }
     if (w != s.tw || h != s.th) {
         if (s.tex) SDL_DestroyTexture(s.tex);
         s.tex = SDL_CreateTexture(s.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
@@ -286,6 +294,20 @@ void SdlHost::vsync(Machine& m) {
     SDL_FRect dst{(float)((cw - w) / 2), (float)((ch - h) / 2), (float)w, (float)h};
     SDL_RenderTexture(s.ren, s.tex, nullptr, &dst);
     SDL_RenderPresent(s.ren);
+
+    // The snap waits for the window to stop moving and for the mouse to be let go, so a drag is never fought. Both
+    // guards matter: the first covers a slow drag, the second covers a keyboard or window-manager resize that no
+    // button was ever held for.
+    if (s.resize_pending && !s.letterbox) {
+        const bool held = (SDL_GetGlobalMouseState(nullptr, nullptr) &
+                           (SDL_BUTTON_LMASK | SDL_BUTTON_RMASK | SDL_BUTTON_MMASK)) != 0;
+        if (!held && SDL_GetTicks() - s.resize_ms >= 150) {
+            int x, y, w, h;
+            m.display_area(x, y, w, h);
+            snap_window(s.win, std::max(w, 640), std::max(h, 480));
+            s.resize_pending = false;
+        }
+    }
 
     m.audio_take(s.sound);
     bool unpaced = SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_TAB];
