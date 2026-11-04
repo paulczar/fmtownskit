@@ -70,7 +70,21 @@ struct FmPort : ymfm::ymfm_interface {
     uint64_t at = 0;                    // the guest time of the chip's current access
     uint64_t timer[2] = {kNever, kNever};
     uint64_t busy_until = 0;
-    void ymfm_set_timer(uint32_t t, int32_t clocks) override { timer[t] = clocks < 0 ? kNever : at + (uint64_t)clocks * 2; }
+    // Instrument only: the first few timer schedules and cancels, with their sign. It is what showed that ymfm does schedule
+    // this driver's timers (positive durations) and also cancels them, and the distinction is invisible in a count of writes.
+    void ymfm_set_timer(uint32_t t, int32_t clocks) override {
+        static unsigned pos = 0, neg = 0;
+        bool show = false;
+        if (clocks >= 0) {
+            if (pos++ < 5) show = true;
+        } else if (neg++ < 3) {
+            show = true;
+        }
+        if (show && m && m->trace_int)
+            std::fprintf(stderr, "  ymfm_set_timer(%u, %d) at frame %llu [pos=%u neg=%u]\n", t, clocks,
+                         (unsigned long long)m->frame, pos, neg);
+        timer[t] = clocks < 0 ? kNever : at + (uint64_t)clocks * 2;
+    }
     void ymfm_set_busy_end(uint32_t clocks) override { busy_until = at + (uint64_t)clocks * 2; }
     bool ymfm_is_busy() override { return at < busy_until; }
     void ymfm_update_irq(bool asserted) override { if (m) { m->sound.fm_irq = asserted; m->sound_irq(); } }
@@ -221,6 +235,11 @@ uint64_t Machine::sound_next_event() const {
     return std::min({s.pcm_next, s.port.timer[0], s.port.timer[1]});
 }
 
+// Counts the timer diagnostics so a session cannot flood the log.
+static unsigned tmr_notes = 0;
+static unsigned tmr_exp_notes = 0;
+static unsigned status_notes = 0;   // separate: sharing one counter meant 40 status reads exhausted it before any expiry printed
+
 void Machine::sound_run(uint64_t to) {
     SoundChips& s = *chips;
     for (;;) {
@@ -235,6 +254,9 @@ void Machine::sound_run(uint64_t to) {
         fm_catch_up(s, t);
         s.port.timer[n] = kNever;
         s.port.at = t;
+        if (trace_int && tmr_exp_notes++ < 20)
+            std::fprintf(stderr, "  FM timer %d expired at frame %llu (now %llu)\n", n, (unsigned long long)frame,
+                         (unsigned long long)now);
         s.port.expire(n);
     }
 }
@@ -246,7 +268,26 @@ uint8_t Machine::sound_in8(uint32_t port) {
     case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
         fm_catch_up(s, now);
         s.port.at = now;
-        return s.fm.read((port - 0x4D8) >> 1);
+        // A read of the FM address port returns the chip's status: timer overflow flags and the busy bit. A driver that polls
+        // the timers instead of taking their interrupt reads here, so counting these says which kind of driver this is.
+        {
+            const uint8_t st = s.fm.read((port - 0x4D8) >> 1);
+            // A per-frame summary rather than the first N reads: what matters is whether the driver is still polling later,
+            // and a cap on printed lines hides exactly that. Bits 0 and 1 are the timer overflow flags it would be waiting
+            // for, so the count of reads that carried either is the answer.
+            if (trace_int) {
+                static uint64_t f = ~0ULL;
+                static unsigned n = 0, with_flags = 0;
+                if (frame != f) {
+                    if (n) std::fprintf(stderr, "  FM status frame %llu: %u reads, %u with a timer flag\n",
+                                        (unsigned long long)f, n, with_flags);
+                    f = frame; n = 0; with_flags = 0;
+                }
+                ++n;
+                if (st & 0x03) ++with_flags;
+            }
+            return st;
+        }
     case 0x4E0: return sound.in_volume[sound.in_sel & 3];
     case 0x4E1: return sound.in_sel;
     case 0x4E2: return sound.volume[sound.volume_sel & 3];
@@ -282,14 +323,25 @@ static void cd_db(Machine& m, float db) {
     m.sound.cd_gain[ch] = db > 0 ? 0.0f : std::pow(10.0f, db / 20.0f);
 }
 
+// Counts the FM register diagnostics below, so a session cannot flood the log. File scope: instrument state, not machine state.
+static unsigned fm_reg_notes = 0;
+
 void Machine::sound_out8(uint32_t port, uint8_t d) {
     SoundChips& s = *chips;
     switch (port) {
-    case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE:
+    case 0x4D8: case 0x4DA: case 0x4DC: case 0x4DE: {
         fm_catch_up(s, now);
         s.port.at = now;
+        // The original's sound driver writes 0x27 (timer control) to the YM3438 at the splash. Seeing whether this port's copy
+        // of that driver reaches the same register is the difference between "the driver runs" and "the driver runs and gives
+        // up", and the two look identical from outside.
+        if (trace_int && fm_reg_notes++ < 400) {
+            if ((port - 0x4D8) >> 1 == 0) std::fprintf(stderr, "  FM reg=%02X at frame %llu\n", d, (unsigned long long)frame);
+            else std::fprintf(stderr, "  FM data=%02X at frame %llu\n", d, (unsigned long long)frame);
+        }
         s.fm.write((port - 0x4D8) >> 1, d);
         return;
+    }
     case 0x4E0: sound.in_volume[sound.in_sel & 3] = d; return;
     case 0x4E1: sound.in_sel = d; return;
     case 0x4E2:

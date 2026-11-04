@@ -705,8 +705,39 @@ void Machine::int90(X86Cpu& c) {
     // the `c.r[0] &= 0xFFFF00FF` at the end of this function already delivers it by zeroing AH. One call
     // measured, with AL=0. The handler is TBIOS's own, reached through CS=0008 at linear 0x5C12E.
     case 0x04:
-    case 0x00: case 0x01: case 0x02: case 0x05: case 0x06:   // init, buffer, code, click, clear
+    case 0x00: case 0x02: case 0x05: case 0x06:   // init, buffer, code, click, clear
         break;
+    case 0x01: {                                    // the sound driver, run for real
+        // MEASURED ON THE ORIGINAL, 2026-11-03, with Tsugaru's debugger. The Towns sound BIOS is entered through
+        // int 90h and dispatches on AH at 0110:000110B0:
+        //
+        //   0110b3  80 FC 51        cmp ah, 0x51
+        //   0110b8  0F B6 EC        movzx ebp, ah
+        //   0110bb  2E FF 14 AD CC 10 01 00   jmp dword ptr cs:[ebp*4 + 0x110CC]
+        //
+        // and entry 1 of that table at cs:0x110CC is 0x11224: the sound driver, which calls f_00011bf0 and, at the
+        // splash, writes 0x27 to 0x4D8 -- the YM3438's timer control -- from 0110:00011C08. That write is the first
+        // sound write the original makes, and it is what arms the timers the music runs off.
+        //
+        // The kit answered AH=01 with `break`, so this driver never ran. That is why the menu had no music, no keypress
+        // beeps, and why the engine only stumbled into life about 66 seconds later by some other path. The driver is in
+        // the recompiled module already, so it is called here rather than reimplemented.
+        X86Func f = x86_lookup_cs(0x0110, 0x11224);
+        if (!f) {
+            char why[64];
+            std::snprintf(why, sizeof why, "int 90h AH=01: no TBIOS sound driver at 0110:00011224");
+            x86_fault(c, c.eip, why);
+        }
+        const uint32_t resume = 0x0110F000u;    // a return address inside TBIOS's own segment, popped by the driver's ret
+        const uint32_t saved_cs = c.sreg[1];
+        x86_load_seg(c, 1, 0x0110);             // the driver runs with CS = TBIOS, as it would on a real int 90h
+        push32(c, resume);
+        if (trace_int) std::fprintf(stderr, "  int 90h AH=01 -> TBIOS sound driver 0110:00011224\n");
+        f(c);
+        if (c.eip != resume) x86_fault(c, c.eip, "the TBIOS sound driver returned elsewhere");
+        x86_load_seg(c, 1, saved_cs);
+        break;
+    }
     case 0x09:                                      // read a key
         // PATCH, this repository. The kit had no keyboard, so this answered "none" for ever and a program
         // polling for input never moved. Measured on the live machine at 000C:000000B6, the instruction after
