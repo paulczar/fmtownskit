@@ -694,9 +694,16 @@ void Machine::press_key(uint8_t scan, uint8_t ascii) { keys.push_back(Key{scan, 
 // each int and the instruction after it) with no key ever pressed -- AH 0 for every function,
 // KYB_read (AH=09h) DX FFFFh and BX FF00h, KYB_matrix (AH=0Ah) its 16 bytes at DS:EDI none down
 // (*inferred*: zeros).
+// Counts the non-key-read service diagnostics so a session cannot flood the log.
+static unsigned svc_notes = 0;
+
 void Machine::int90(X86Cpu& c) {
     uint8_t ah = (c.r[0] >> 8) & 0xFF;
     if (trace_int) std::fprintf(stderr, "int 90h AX=%04X EBX=%08X ECX=%08X EDX=%08X\n", c.r[0] & 0xFFFF, c.r[3], c.r[1], c.r[2]);
+    // Instrument: every service EXCEPT the key read, with its frame. The key read is called millions of times and buries
+    // everything else; the rare ones are where a driver asks for something to be done, and the music asks for something.
+    if (trace_int && ah != 0x09 && svc_notes++ < 60)
+        std::fprintf(stderr, "  int90 AH=%02X AL=%02X at frame %llu\n", ah, c.r[0] & 0xFF, (unsigned long long)frame);
     switch (ah) {
     // PATCH, this repository. KYB_lock (AH=04) was not in this kit's recordings, because they were taken
     // with no key ever pressed. Measured on the live machine with the emulator console at 000C:0052:
@@ -708,6 +715,8 @@ void Machine::int90(X86Cpu& c) {
     case 0x00: case 0x02: case 0x05: case 0x06:   // init, buffer, code, click, clear
         break;
     case 0x01: {                                    // the sound driver, run for real
+        // Service 6 is entry 6 of the same table at cs:0x110CC, which is 0x11274, and it is the one the game actually asks for
+        // at the menu (frames 2604 and 4423). The kit answered that with `break` too.
         // MEASURED ON THE ORIGINAL, 2026-11-03, with Tsugaru's debugger. The Towns sound BIOS is entered through
         // int 90h and dispatches on AH at 0110:000110B0:
         //
@@ -722,10 +731,11 @@ void Machine::int90(X86Cpu& c) {
         // The kit answered AH=01 with `break`, so this driver never ran. That is why the menu had no music, no keypress
         // beeps, and why the engine only stumbled into life about 66 seconds later by some other path. The driver is in
         // the recompiled module already, so it is called here rather than reimplemented.
-        X86Func f = x86_lookup_cs(0x0110, 0x11224);
+        const uint32_t entry = (ah == 0x01) ? 0x11224u : 0x11274u;
+        X86Func f = x86_lookup_cs(0x0110, entry);
         if (!f) {
             char why[64];
-            std::snprintf(why, sizeof why, "int 90h AH=01: no TBIOS sound driver at 0110:00011224");
+            std::snprintf(why, sizeof why, "int 90h AH=%02Xh: no TBIOS entry at 0110:%08X", ah, entry);
             x86_fault(c, c.eip, why);
         }
         const uint32_t resume = 0x0110F000u;    // a return address inside TBIOS's own segment, popped by the driver's ret

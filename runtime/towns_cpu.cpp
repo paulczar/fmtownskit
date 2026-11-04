@@ -212,6 +212,12 @@ void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
 
 // Take an interrupt now: the handler runs as a call, its iretd returns here.
 static void take(X86Cpu& c, int vec) {
+    // Instrument: is any hardware interrupt ever delivered? The driver arms both timers with interrupts enabled at frame 4026 and
+    // then does nothing, which is what waiting for a handler looks like. Zero of these lines with the poll enabled means the
+    // request never becomes a delivery.
+    static unsigned taken = 0;
+    if (g_towns->trace_int && taken++ < 15)
+        std::fprintf(stderr, "  INT TAKEN vec=%02X at frame %llu\n", vec & 0xFF, (unsigned long long)g_towns->frame);
     const towns::IntVector& iv = g_towns->pm_vector[vec];
     uint32_t resume = c.eip;
     push32(c, c.fl);

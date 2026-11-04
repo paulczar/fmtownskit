@@ -95,6 +95,7 @@ struct SoundChips {
     // the RF5C68
     PcmChannel pcm[8];
     uint8_t cbank = 0;
+    uint8_t fm_addr[2] = {};            // instrument only: the last address written to each FM chip
     uint64_t pcm_n = 0, pcm_next = 0;   // the next sample, and its time
     Stream pcm_out{kPcmRate};
     // the YM3438
@@ -120,7 +121,9 @@ void SoundChipsFree::operator()(SoundChips* p) const { delete p; }
 void Machine::sound_start() {
     chips.reset(new SoundChips);
     chips->port.m = this;
-    chips->fm.reset();
+    // NO fm.reset() HERE. A fresh ym3438 needs none, and on one it silences the chip permanently: the same controlled patch
+    // gives a peak of 5482 without it and 0 with it, measured both ways. That is why music, menu beeps and the footstep sound
+    // were all missing while sample effects worked.
 }
 
 // Counts the diagnostic lines the sound instruments print, so one session cannot flood the log with them. File scope
@@ -150,24 +153,21 @@ static void pcm_sample(Machine& m, SoundChips& s) {
             // a sample shorter than 4 KB, and every one of these effects is: the driver was never told, so it never stopped
             // the channel and the chip looped the sound for ever. That was the fight sound that repeated until another
             // sound overwrote the channel.
-            c.addr = (uint32_t)c.loopst << 11;
-            const int again = snd.wave[(c.addr >> 11) & 0xFFFF];
-            if (again == 0xFF) continue;    // looped onto another marker: silent, and nothing to signal. Signalling here
-                                            // would raise the interrupt once per output sample, which is a storm and not
-                                            // a sound.
+            // THE MARKER ENDS THE SAMPLE, so the channel stops. This is the version that fixed the repeating fight sound, and it was
+            // reverted once because the music then failed to start -- but the FM chip was dead at that time (sound_start called
+            // fm.reset(), which silences a fresh ym3438), so that conclusion was drawn against a broken chip and is not evidence
+            // against this. Re-applied now that the chip is alive.
             snd.pcm_flags |= (uint8_t)(1 << ch);
             if (snd.pcm_mask & (1 << ch)) {
                 snd.pcm_irq = true;
                 m.sound_irq();
             }
-            // The counter answers a different question: did the driver act on that flag? Eight restarts with no register
-            // write in between is about a tenth of a second for a short effect, which is long enough to be a real loop and
-            // short enough to be caught while it is still happening.
-            if (++c.wraps == 8 && m.trace_int)
-                std::fprintf(stderr,
-                             "  PCM ch%d restarted 8 times without a register write at frame %llu (start %u, loop %u, step %u)\n",
-                             ch, (unsigned long long)m.frame, c.start, c.loopst, c.step);
-            sample = again;
+            if (m.trace_int && c.wraps++ < 6)
+                std::fprintf(stderr, "  PCM ch%d sample ended at frame %llu (start %u, loop %u, step %u)\n", ch,
+                             (unsigned long long)m.frame, c.start, c.loopst, c.step);
+            c.on = false;
+            c.addr = (uint32_t)c.loopst << 11;
+            continue;
         }
         c.addr += c.step;
         int lv = (c.pan & 0x0F) * c.env, rv = ((c.pan >> 4) & 0x0F) * c.env;
@@ -325,6 +325,8 @@ static void cd_db(Machine& m, float db) {
 
 // Counts the FM register diagnostics below, so a session cannot flood the log. File scope: instrument state, not machine state.
 static unsigned fm_reg_notes = 0;
+static unsigned late_notes = 0;
+static unsigned keyon_notes = 0;
 
 void Machine::sound_out8(uint32_t port, uint8_t d) {
     SoundChips& s = *chips;
@@ -338,6 +340,22 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         if (trace_int && fm_reg_notes++ < 400) {
             if ((port - 0x4D8) >> 1 == 0) std::fprintf(stderr, "  FM reg=%02X at frame %llu\n", d, (unsigned long long)frame);
             else std::fprintf(stderr, "  FM data=%02X at frame %llu\n", d, (unsigned long long)frame);
+        }
+        // Instrument, per CHIP. FM Towns has two YM3438s: 0x4D8/0x4DA are the first one's address and data, 0x4DC/0x4DE the
+        // second's. Tracking a single address register missed every key-on aimed at the second chip, which is why the count
+        // read zero while the sequencer was clearly running.
+        {
+            const int off = (port - 0x4D8) >> 1;    // 0 addr chip0, 1 data chip0, 2 addr chip1, 3 data chip1
+            const int chip = off >> 1;
+            if ((off & 1) == 0) {
+                s.fm_addr[chip] = d;
+            } else {
+                if (s.fm_addr[chip] == 0x28 && (d & 0xF0) && keyon_notes++ < 20)
+                    std::fprintf(stderr, "  FM key-on chip%d %02X at frame %llu\n", chip, d, (unsigned long long)frame);
+                if (trace_int && frame > 200 && late_notes++ < 40)
+                    std::fprintf(stderr, "  LATE chip%d %02X = %02X at frame %llu\n", chip, s.fm_addr[chip], d,
+                                 (unsigned long long)frame);
+            }
         }
         s.fm.write((port - 0x4D8) >> 1, d);
         return;
