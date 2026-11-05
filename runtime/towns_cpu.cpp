@@ -207,6 +207,13 @@ uint32_t x86_in(X86Cpu& c, uint32_t port, int n) {
 void x86_out(X86Cpu& c, uint32_t port, int n, uint32_t v) {
     g_towns->advance(g_towns->machine_time(c.clocks));
     if (g_towns->count_access) { ++g_towns->access.io_w; if (port == 0x6C) ++g_towns->access.wait_w; }
+    // Who writes the sample channel registers? The original's breakpoint on 0x4F8 landed at 0110:00013025, inside f_000112a4, which
+    // is the RELEASE path: it reads 0x4EA, clears the channel bits from the claim masks and writes their complement. Knowing which
+    // instruction writes 0x4F8 in the port makes the two comparable, and answers whether the start path is TBIOS code we can name.
+    static unsigned f8 = 0;
+    if ((port == 0x4F8 || port == 0x4F6 || port == 0x4F4) && g_towns->trace_int && f8++ < 60)
+        std::fprintf(stderr, "  OUT %03X = %02X from %04X:%08X at frame %llu\n", (unsigned)port, (unsigned)(v & 0xFF),
+                     (unsigned)c.sreg[1], (unsigned)c.eip, (unsigned long long)g_towns->frame);
     g_towns->out(port, n, v);
 }
 
@@ -236,6 +243,23 @@ static bool in_poll = false;
 
 void x86_poll(X86Cpu& c) {
     towns::Machine& m = *g_towns;
+    // Summary rather than a flood: how often the poll ran, how often the gate was open, and the first frame at which a hardware
+    // request was pending with interrupts enabled. Headless runs never enter this function at all, so the only place this can be
+    // measured is an interactive session, and a session log cannot carry one line per poll.
+    {
+        static unsigned long long polls = 0, if_set = 0, first_open = 0;
+        ++polls;
+        if (c.fl & X86_IF) {
+            ++if_set;
+            if (!first_open) first_open = m.frame;
+        }
+        static uint64_t last_report = 0;
+        if (m.trace_int && m.frame / 200 != last_report / 200) {
+            last_report = m.frame;
+            std::fprintf(stderr, "  POLL up to frame %llu: %llu polls, %llu with IF set, first IF frame %llu, irq_poll %d\n",
+                         (unsigned long long)m.frame, polls, if_set, first_open, m.irq_poll ? 1 : 0);
+        }
+    }
     // The poll is called by the recompiled code (X86_POLL, 13,938 sites) when the instruction budget runs out, so it has always
     // been the port's time base: its advance() is what moves the machine's clock. The two optional halves are the interrupt
     // delivery and the timer BIOS's callbacks, and each is off unless asked. An earlier version returned before the advance
@@ -243,6 +267,16 @@ void x86_poll(X86Cpu& c) {
     if (in_poll) return;
     in_poll = true;
     m.advance(m.machine_time(c.clocks));
+    // Instrument: the gate between a hardware request and its delivery is two flags, irq_poll and the guest's IF. A request that
+    // sits unclaimed with the poll on means the guest is running with interrupts disabled, which is a fact about this port's
+    // execution and not about the chip. Printed once per frame, in a narrow band around the frame the driver arms the timers.
+    if (m.trace_int) {
+        static unsigned shown = 0;
+        if (shown++ < 10) {
+            std::fprintf(stderr, "  POLL frame %llu irq_poll %d IF %d fm_irq %d pcm_irq %d\n", (unsigned long long)m.frame,
+                         m.irq_poll ? 1 : 0, (c.fl & X86_IF) ? 1 : 0, m.sound.fm_irq ? 1 : 0, m.sound.pcm_irq ? 1 : 0);
+        }
+    }
     while (m.irq_poll && (c.fl & X86_IF)) {
         int vec = m.pending_irq();
         if (vec < 0) break;

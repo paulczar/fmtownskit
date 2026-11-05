@@ -57,6 +57,20 @@ void Machine::raise_irq(int irq, bool level) {
 int Machine::pending_irq() {
     Pic& m = pic[0];
     Pic& s = pic[1];
+    // Instrument: the sound request is IRQ13, which is slave IRQ5 and vector 0x4D. The handler at 0x4D is installed by the
+    // program, so if a request sits in the slave's IRR and is never taken, the reason is a mask. This prints that state when
+    // the request is pending, once per frame, and it is the difference between "the chip never asked" and "the CPU is told
+    // not to listen".
+    if (trace_int && (s.irr & 0x20)) {
+        static uint64_t last = ~0ULL;
+        if (frame != last) {
+            last = frame;
+            std::fprintf(stderr, "  IRQ13 pending at frame %llu: master imr %02X isr %02X irr %02X, slave imr %02X isr %02X, "
+                                 "vector 4D %s\n",
+                         (unsigned long long)frame, m.imr, m.isr, m.irr, s.imr, s.isr,
+                         pm_vector[0x4D].set ? "installed" : "MISSING");
+        }
+    }
     int sirq = -1;
     for (int i = 0; i < 8; ++i) {
         if (s.isr & (1 << i)) break;

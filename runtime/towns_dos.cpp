@@ -287,6 +287,15 @@ void Machine::int21(X86Cpu& c) {
             // interrupt here is taken in protected mode; a vector set back to what 02h gave
             // before any was set (selector 0) is none.
             pm_vector[c.r[1] & 0xFF] = {c.sreg[3], c.r[2], c.sreg[3] != 0};
+            // Instrument: which interrupt vectors the program installs, and where. The port delivers keys through a queue rather
+            // than through a keyboard interrupt handler, so anything that handler does is skipped (the keypress beep among it).
+            // These lines name the handlers so one of them can be identified as the keyboard's and called the way the machine calls it.
+            if (trace_int) {
+                static unsigned vec_notes = 0;
+                if (vec_notes++ < 40)
+                    std::fprintf(stderr, "  VECTOR %02X -> %04X:%08X at frame %llu\n", c.r[1] & 0xFF, c.sreg[3], c.r[2],
+                                 (unsigned long long)frame);
+            }
             if (al == 0x07) rm_vector[c.r[1] & 0xFF] = c.r[3];
             set_cf(c, false);
             return;

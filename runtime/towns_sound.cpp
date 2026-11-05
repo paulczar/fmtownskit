@@ -87,7 +87,18 @@ struct FmPort : ymfm::ymfm_interface {
     }
     void ymfm_set_busy_end(uint32_t clocks) override { busy_until = at + (uint64_t)clocks * 2; }
     bool ymfm_is_busy() override { return at < busy_until; }
-    void ymfm_update_irq(bool asserted) override { if (m) { m->sound.fm_irq = asserted; m->sound_irq(); } }
+    void ymfm_update_irq(bool asserted) override {
+        // The link between arming a timer and the handler running is where the music stops, so it gets a line of its own. If
+        // these appear at frame 97 and no interrupt is ever taken, the request exists and delivery does not, which is a
+        // different fault from the driver never asking.
+        if (m && m->trace_int) {
+            static unsigned n = 0;
+            if (n++ < 12)
+                std::fprintf(stderr, "  FM IRQ %s at frame %llu\n", asserted ? "asserted" : "released",
+                             (unsigned long long)m->frame);
+        }
+        if (m) { m->sound.fm_irq = asserted; m->sound_irq(); }
+    }
     void expire(uint32_t t) { m_engine->engine_timer_expired(t); }
 };
 
@@ -153,18 +164,38 @@ static void pcm_sample(Machine& m, SoundChips& s) {
             // a sample shorter than 4 KB, and every one of these effects is: the driver was never told, so it never stopped
             // the channel and the chip looped the sound for ever. That was the fight sound that repeated until another
             // sound overwrote the channel.
-            // THE MARKER ENDS THE SAMPLE, so the channel stops. This is the version that fixed the repeating fight sound, and it was
-            // reverted once because the music then failed to start -- but the FM chip was dead at that time (sound_start called
-            // fm.reset(), which silences a fresh ym3438), so that conclusion was drawn against a broken chip and is not evidence
-            // against this. Re-applied now that the chip is alive.
+            // THE MARKER ENDS THE SAMPLE. Looping here was measured in play on 2026-11-05 and loops for ever, because the driver does
+            // not release a channel of its own accord: the ordered log shows start, marker, and then nothing until the NEXT sound's
+            // stop write replaces it. So the stopping has to be ours. What is left open is why the marker arrives about twelve frames
+            // into a sound that should last longer, which is the wave dump below.
             snd.pcm_flags |= (uint8_t)(1 << ch);
             if (snd.pcm_mask & (1 << ch)) {
                 snd.pcm_irq = true;
                 m.sound_irq();
             }
-            if (m.trace_int && c.wraps++ < 6)
+            if (m.trace_int && c.wraps++ < 1) {
                 std::fprintf(stderr, "  PCM ch%d sample ended at frame %llu (start %u, loop %u, step %u)\n", ch,
                              (unsigned long long)m.frame, c.start, c.loopst, c.step);
+                // The bytes the channel was actually reading, at the loop address, so a marker that arrives too early can be told from
+                // a marker that is genuinely there. A wave RAM that is mostly FF says the mapping is wrong rather than the sound short.
+                unsigned ff = 0, first = 0;
+                bool found = false;
+                for (unsigned i = 0; i < 0x10000; ++i) {
+                    if (snd.wave[i] == 0xFF) {
+                        ++ff;
+                    } else if (!found) {
+                        found = true;
+                        first = i;
+                    }
+                }
+                const unsigned at = (unsigned)c.loopst << 8;
+                std::fprintf(stderr, "  WAVE read at %04X (start %u loop %u):", (unsigned)((c.addr >> 11) & 0xFFFF), c.start,
+                             c.loopst);
+                for (unsigned i = 0; i < 24; ++i)
+                    std::fprintf(stderr, " %02X", snd.wave[(((unsigned)(c.addr >> 11)) + i) & 0xFFFF]);
+                std::fprintf(stderr, "\n  WAVE ff %u of 65536, first non-FF at %04X, loop point %04X\n", ff, found ? first : 0xFFFFu,
+                             at & 0xFFFF);
+            }
             c.on = false;
             c.addr = (uint32_t)c.loopst << 11;
             continue;
@@ -272,6 +303,13 @@ uint8_t Machine::sound_in8(uint32_t port) {
         // the timers instead of taking their interrupt reads here, so counting these says which kind of driver this is.
         {
             const uint8_t st = s.fm.read((port - 0x4D8) >> 1);
+            // DIAGNOSTIC, U2_FM_FLAGS=1: report both timer overflow flags as set on every status read.
+            // ymfm sets a timer's overflow flag only when that timer's interrupt is enabled, while the hardware sets it on expiry
+            // regardless and gates only the interrupt line. A driver that polls the flags rather than taking the interrupt sees a
+            // chip that never finishes a timer under ymfm, which looks exactly like a driver that gives up. This switch tests that
+            // without patching ymfm, and it is off unless the variable is set.
+            static const bool force_fm_flags = std::getenv("U2_FM_FLAGS") != nullptr;
+            const uint8_t st_out = force_fm_flags ? (uint8_t)(st | 0x03) : st;
             // A per-frame summary rather than the first N reads: what matters is whether the driver is still polling later,
             // and a cap on printed lines hides exactly that. Bits 0 and 1 are the timer overflow flags it would be waiting
             // for, so the count of reads that carried either is the answer.
@@ -284,9 +322,9 @@ uint8_t Machine::sound_in8(uint32_t port) {
                     f = frame; n = 0; with_flags = 0;
                 }
                 ++n;
-                if (st & 0x03) ++with_flags;
+                if (st_out & 0x03) ++with_flags;
             }
-            return st;
+            return st_out;
         }
     case 0x4E0: return sound.in_volume[sound.in_sel & 3];
     case 0x4E1: return sound.in_sel;
