@@ -620,7 +620,12 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         cd_play(from_msf(p), from_msf(p + 3));
         cd_paused = false;
         cd.repeat = c.r[1] & 0xFF;
-        if (trace_int) std::fprintf(stderr, "  CD-DA %u to %u (frame %llu)\n", cd.from, cd.to, (unsigned long long)frame);
+        // The request's six raw bytes as well as the decoded range. A splash that plays music on the original and not here is either
+        // a request this port never receives or a request it decodes wrongly, and the two are indistinguishable from the decoded
+        // MSF alone: a range that decodes to zero looks the same whether the argument was zeros or a different encoding entirely.
+        if (trace_int)
+            std::fprintf(stderr, "  CD-DA %u to %u (frame %llu) raw %02X %02X %02X %02X %02X %02X cx %04X\n", cd.from, cd.to,
+                         (unsigned long long)frame, p[0], p[1], p[2], p[3], p[4], p[5], c.r[1] & 0xFFFF);
         return;
     }
     case 0x53: {                                    // where the play is: AL and the buffer
@@ -681,6 +686,13 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             if (!t[k].audio) o[6 + 3 * k] |= 0x80;
         }
         write_block(buf, o.data(), (uint32_t)o.size());
+        // The table the program is given, because the play range it asks for a few frames later is computed from this: a request
+        // that arrives as 00:00:00 to 00:00:00 is what a caller sees when the table says all zeros, not when it fails to ask.
+        if (trace_int) {
+            std::fprintf(stderr, "  CD-DA toc %u bytes:", (unsigned)o.size());
+            for (size_t i = 0; i < o.size() && i < 24; ++i) std::fprintf(stderr, " %02X", o[i]);
+            std::fprintf(stderr, "\n");
+        }
         return;
     }
     default: break;

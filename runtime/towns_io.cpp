@@ -134,6 +134,33 @@ void Machine::advance(uint64_t to) {
         }
         if (now >= next_vsync) {
             ++frame;
+            // DIAGNOSTIC, U2_DUMP_DISPATCH=1: dump the TBIOS service dispatch table once, at frame 150. The dispatcher resolves
+            // `call dword ptr cs:[ebp*4+0x110CC]` at run time, so which entry answers AH=0x10 is a fact about the loaded image and
+            // not something a static read of the module can give. The table is found by searching memory for the dispatcher's own
+            // first instructions rather than by assuming a base.
+            if (frame == 150 && std::getenv("U2_DUMP_DISPATCH")) {
+                static const uint8_t pattern[3] = {0x0F, 0xB6, 0xEC};   // movzx ebp, ah, three bytes into the dispatcher
+                uint32_t found = 0;
+                std::vector<uint8_t> buf(0x1000);
+                for (uint32_t base = 0; base < 0x200000 && !found; base += 0x1000) {
+                    read_block(base, buf.data(), (uint32_t)buf.size());
+                    for (uint32_t i = 0; i + 3 <= buf.size(); ++i)
+                        if (std::equal(pattern, pattern + 3, buf.begin() + i)) {
+                            found = base + i;
+                            break;
+                        }
+                }
+                std::fprintf(stderr, "DISPATCH search %s\n", found ? "found" : "FAILED");
+                if (found) {
+                    const uint32_t table = (found - 0x110B8u) + 0x110CCu;
+                    std::vector<uint8_t> t(0x52 * 4);
+                    read_block(table, t.data(), (uint32_t)t.size());
+                    for (unsigned k = 0; k < 0x52; ++k) {
+                        uint32_t v = t[k * 4] | (t[k * 4 + 1] << 8) | (t[k * 4 + 2] << 16) | ((uint32_t)t[k * 4 + 3] << 24);
+                        if (v) std::fprintf(stderr, "DISPATCH AH=%02X -> %08X\n", k, v);
+                    }
+                }
+            }
             vblank = true;
             vblank_end = now + kClock / 400;    // 2,500 us
             raise_irq(11, true);

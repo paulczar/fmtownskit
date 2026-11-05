@@ -285,7 +285,7 @@ void Machine::sound_run(uint64_t to) {
         fm_catch_up(s, t);
         s.port.timer[n] = kNever;
         s.port.at = t;
-        if (trace_int && tmr_exp_notes++ < 20)
+        if (trace_int && tmr_exp_notes++ < 6000)
             std::fprintf(stderr, "  FM timer %d expired at frame %llu (now %llu)\n", n, (unsigned long long)frame,
                          (unsigned long long)now);
         s.port.expire(n);
