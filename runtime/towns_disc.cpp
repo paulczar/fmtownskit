@@ -6,6 +6,8 @@
 #include "towns.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace towns {
@@ -36,7 +38,114 @@ FILE* Disc::handle(const std::string& path) {
     return f;
 }
 
+// ---- CloneCD ------------------------------------------------------------------------------------------------------------
+// The .cue cannot describe this disc. Its track 2 carries `PREGAP 00:02:00`, and whether the rip already contains that gap is a
+// property of the image rather than of the cue, so the loader refuses the file outright rather than shifting every later track by
+// 150 sectors in silence. The .ccd states the layout: one entry per track carrying a Control byte and a PLBA, plus the lead-out.
+// Control is the Q subchannel control field and bit 0x04 is the data bit, set for data and clear for audio, which is the only
+// per-track mode either format carries. That is why this is parsed rather than inferred from track numbers.
+struct CcdEntry {
+    int point = -1;
+    int control = -1;
+    long long plba = -1;
+};
+
+static bool EndsWithNoCase(const std::string& s, const char* tail) {
+    const size_t n = std::strlen(tail);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower((unsigned char)s[s.size() - n + i]) != std::tolower((unsigned char)tail[i])) return false;
+    return true;
+}
+
+static bool ParseCcdToc(const std::string& ccd, std::vector<CcdEntry>& entries, long long& leadout, std::string& err) {
+    FILE* f = std::fopen(ccd.c_str(), "r");
+    if (!f) { err = ccd + ": cannot open"; return false; }
+    CcdEntry cur;
+    bool have = false;
+    char line[1024];
+    while (std::fgets(line, sizeof line, f)) {
+        char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p == '[') {
+            if (have && cur.point >= 0 && cur.plba >= 0) entries.push_back(cur);
+            cur = CcdEntry{};
+            have = false;
+            continue;
+        }
+        if (!std::strncmp(p, "Point=", 6)) { cur.point = (int)std::strtol(p + 6, nullptr, 0); have = true; }
+        else if (!std::strncmp(p, "Control=", 8)) { cur.control = (int)std::strtol(p + 8, nullptr, 0); have = true; }
+        else if (!std::strncmp(p, "PLBA=", 5)) { cur.plba = std::strtol(p + 5, nullptr, 10); have = true; }
+    }
+    if (have && cur.point >= 0 && cur.plba >= 0) entries.push_back(cur);
+    std::fclose(f);
+    leadout = -1;
+    for (const CcdEntry& e : entries)
+        if (e.point == 0xA2) leadout = e.plba;
+    if (entries.empty() || leadout < 0) {
+        err = ccd + ": no TOC entries, or no lead-out (Point=0xa2)";
+        return false;
+    }
+    return true;
+}
+
 bool Disc::open(const std::string& cue, std::string& err) {
+    // CloneCD first: a .ccd states the layout, so it is read directly rather than through the cue parser, which refuses the same
+    // disc because of an undecidable pregap.
+    if (EndsWithNoCase(cue, ".ccd")) {
+        std::vector<CcdEntry> entries;
+        long long leadout = -1;
+        if (!ParseCcdToc(cue, entries, leadout, err)) return false;
+        std::string img = cue;
+        img.replace(img.size() - 4, 4, ".img");
+        {
+            FILE* probe = std::fopen(img.c_str(), "rb");
+            if (!probe) {
+                err = img + ": the .ccd describes this image, which cannot be opened";
+                return false;
+            }
+            std::fclose(probe);
+        }
+        std::vector<int> points;
+        for (const CcdEntry& e : entries)
+            if (e.point >= 1 && e.point <= 99) points.push_back(e.point);
+        std::sort(points.begin(), points.end());
+        if (points.empty()) {
+            err = cue + ": the TOC lists no tracks";
+            return false;
+        }
+        for (size_t i = 0; i < points.size(); ++i) {
+            const CcdEntry* e = nullptr;
+            for (const CcdEntry& c : entries)
+                if (c.point == points[i]) e = &c;
+            if (!e) continue;
+            long long next = leadout;
+            if (i + 1 < points.size())
+                for (const CcdEntry& c : entries)
+                    if (c.point == points[i + 1]) next = c.plba;
+            Track t;
+            t.number = points[i];
+            t.audio = (e->control & 0x04) == 0;
+            t.sector_size = 2352;
+            t.path = img;
+            t.file_start = 0;
+            t.index0 = -1;
+            t.index1 = (int32_t)e->plba;
+            t.sectors = next > e->plba ? (uint32_t)(next - e->plba) : 0;
+            tracks_.push_back(t);
+        }
+        for (auto& t : tracks_)
+            if (!t.audio) {
+                data_ = &t;
+                break;
+            }
+        if (!data_) {
+            err = "no data track";
+            return false;
+        }
+        return true;
+    }
+
     FILE* f = std::fopen(cue.c_str(), "r");
     if (!f) { err = cue + ": cannot open"; return false; }
     std::string base = cue;
@@ -138,7 +247,19 @@ bool Disc::read_data(uint32_t n, uint8_t* out) {
     if (!data_) return false;
     const Track& t = *data_;
     FILE* f = handle(t.path);
-    if (!f || n >= t.sectors) return false;
+    if (!f || n >= t.sectors) {
+        // A refused read is silent today, and a silent refusal looks exactly like a program that chose not to ask. Measured
+        // 2026-11-06: with a one-track cue the game queried the CD and asked it to play, and with the correct eight-track .ccd it
+        // never queried at all, which is the shape of a read failing early and the program giving up.
+        static const bool want = std::getenv("U2_TRACE_INT") != nullptr;
+        if (want) {
+            static unsigned refused = 0;
+            if (refused++ < 8)
+                std::fprintf(stderr, "  disc read REFUSED sector %u (data track %u..%u, %s%s)\n", n, t.lba(),
+                             t.lba() + t.sectors - 1, f ? "" : "no handle", f ? "past the track" : "");
+        }
+        return false;
+    }
     long pos = (long)(t.index1 + n) * t.sector_size + (t.sector_size == 2352 ? 16 : 0);
     if (std::fseek(f, pos, SEEK_SET)) return false;
     return std::fread(out, 1, 2048, f) == 2048;
@@ -158,11 +279,17 @@ bool Disc::read_bytes(uint32_t lba, uint32_t off, uint32_t n, uint8_t* out) {
 bool Disc::read_audio(uint32_t sector, uint8_t* out) {
     for (const auto& t : tracks_) {
         if (!t.audio) continue;
-        // the track's file holds its pregap and its sectors: the file's own sectors
-        uint32_t first = t.file_start, last = t.lba() + t.sectors;
+        // THE TRACK'S OWN RANGE, not the file's. A single-image disc has file_start 0 for every track, so bounding by file_start made
+        // the first audio track claim every sector below its end, and the disc's data track was rendered as audio. Measured
+        // 2026-11-07: the program asked for CD-DA 225 to 280, which is inside the data track, and the result was the squelch heard
+        // at the Create Character screen. The offset inside the file is index1 plus the distance into the track, which is what a cue
+        // layout and a .ccd layout both satisfy.
+        const uint32_t first = t.lba();
+        const uint32_t last = first + t.sectors;
         if (sector < first || sector >= last) continue;
         FILE* f = handle(t.path);
-        if (!f || std::fseek(f, (long)(sector - first) * 2352, SEEK_SET)) return false;
+        const long pos = (long)((uint32_t)t.index1 + (sector - first)) * 2352;
+        if (!f || std::fseek(f, pos, SEEK_SET)) return false;
         return std::fread(out, 1, 2352, f) == 2352;
     }
     return false;

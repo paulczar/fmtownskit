@@ -555,6 +555,15 @@ static void to_msf(uint32_t lba, uint8_t* p) {
     p[0] = (uint8_t)(lba / (75 * 60)); p[1] = (uint8_t)(lba / 75 % 60); p[2] = (uint8_t)(lba % 75);
 }
 
+// The same three fields in BCD, which is what the CD controller's own TOC reply carries: the emulator's SetStatusQueueForTOC passes
+// every value through BinToBCD. Whether the BIOS hands them on unchanged is the question this exists to answer, because the
+// program's play request came out as 00:00:00 to 00:00:00 while these fields were binary.
+static void to_msf_bcd(uint32_t lba, uint8_t* p) {
+    uint8_t bin[3];
+    to_msf(lba, bin);
+    for (int i = 0; i < 3; ++i) p[i] = (uint8_t)(((bin[i] / 10) << 4) | (bin[i] % 10));
+}
+
 static uint32_t from_msf(const uint8_t* p) {
     uint32_t f = ((uint32_t)(p[0] & 0x7F) * 60 + p[1]) * 75 + p[2];
     return f >= 150 ? f - 150 : 0;
@@ -636,7 +645,54 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         // note) while it plays or is paused, all zero once a track has ended or none played.
         uint8_t p[10] = {};
         uint32_t s = cd_sector();               // (a track that has ended stops here)
-        if (cd.playing || cd_paused) {
+        // EXPERIMENT: report the disc position and the track even when nothing is playing. The program asks this service and then
+        // hands the same buffer back as a play range, so an all-zero answer here becomes a request to play nothing. On the machine
+        // the trilogy launcher has a track playing by this point, so the answer is never zero; this port starts Ultima II directly.
+        // The FIRST SIX BYTES ARE THE PLAY RANGE. Measured 2026-11-06: the program asks this service, then hands this very buffer
+        // to the play service, so an all-zero answer becomes a request to play nothing, which is why this port was silent while the
+        // original had music. With a range here the program asked for exactly "start to end of disc".
+        //
+        // What "start" should be when nothing has played is a question about the machine, not about this function. There, the
+        // trilogy launcher is already playing a track before Ultima II runs, so the answer is the position inside an audio track.
+        // This port starts Ultima II directly and has no launcher, so it answers with the first audio track, which is the same
+        // music from its beginning rather than from the middle. Recorded as a deliberate difference rather than a measurement.
+        if (!(cd.playing || cd_paused)) {
+            const auto& tr = disc.tracks();
+            // THE TRACK ULTIMA II PLAYS. Measured 2026-11-07 on the original with the fork's CD audio log: when Ultima II runs, the
+            // CD BIOS has already started CDDAPLAY 06:43:00 to 08:06:74 from 0256:000027C9, which is LBA 30225 to 36524, exactly
+            // track 5 of this disc. Answering with the first audio track instead plays the trilogy's spoken introduction, which is
+            // track 2, and that is a different piece of music.
+            //
+            // The number is this disc's layout, not a rule. Track 5 is measured for Ultima II only: what the launcher chooses for
+            // Ultima I and III has not been measured, and this port boots ENCHANT.EXP directly rather than through the launcher, so
+            // it has no other source for the answer.
+            uint32_t begin = 0, finish = 0;
+            for (const auto& t : tr)
+                if (t.number == 5) {
+                    begin = t.lba();
+                    finish = t.lba() + t.sectors;
+                    break;
+                }
+            if (!begin)
+                for (const auto& t : tr)
+                    if (t.audio) {
+                        begin = t.lba();
+                        finish = t.lba() + t.sectors;
+                        break;
+                    }
+            // to_msf, not a local lambda: it adds the 150-sector lead-in that every MSF on this machine carries, and the play
+            // request is decoded by subtracting it again. Without it the range came out 150 sectors early, which is the pregap,
+            // where there is no audio track and the first two seconds are silence.
+            if (!finish) finish = tr.empty() ? 0u : tr.back().lba() + tr.back().sectors;
+            to_msf(begin, p);
+            to_msf(finish, p + 3);
+            if (trace_int)
+                std::fprintf(stderr, "  CD-DA position: nothing playing, answering %u to the end of the disc\n", begin);
+            write_block(buf, p, sizeof p);
+            ret = (ret & 0xFFFFFF00u) | 0;
+            return;
+        }
+        {
             auto msf = [](uint32_t f, uint8_t* q) { q[0] = (uint8_t)(f / 4500); q[1] = (uint8_t)(f / 75 % 60); q[2] = (uint8_t)(f % 75); };
             for (const auto& t : disc.tracks())
                 if (s >= t.lba()) p[1] = (uint8_t)t.number;
@@ -680,9 +736,9 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         o[0] = 3;                                   // as RUN386's buffer held it (*not understood*)
         o[1] = (uint8_t)t.front().number;
         o[2] = (uint8_t)t.back().number;
-        to_msf(t.back().lba() + t.back().sectors, &o[3]);
+        to_msf_bcd(t.back().lba() + t.back().sectors, &o[3]);
         for (size_t k = 0; k < t.size(); ++k) {
-            to_msf(t[k].lba(), &o[6 + 3 * k]);
+            to_msf_bcd(t[k].lba(), &o[6 + 3 * k]);
             if (!t[k].audio) o[6 + 3 * k] |= 0x80;
         }
         write_block(buf, o.data(), (uint32_t)o.size());
