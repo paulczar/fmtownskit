@@ -656,16 +656,31 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         // trilogy launcher is already playing a track before Ultima II runs, so the answer is the position inside an audio track.
         // This port starts Ultima II directly and has no launcher, so it answers with the first audio track, which is the same
         // music from its beginning rather than from the middle. Recorded as a deliberate difference rather than a measurement.
+        // U2_CD_NOFALLBACK=1 restores the plain answer, zeros while nothing has played, so the fallback's contribution can be
+        // measured instead of assumed. It exists because the fallback was introduced together with the BCD table of contents and
+        // the credit for the splash music was given to the wrong one of the two.
+        static const bool no_fallback = std::getenv("U2_CD_NOFALLBACK") != nullptr;
+        if (no_fallback && !(cd.playing || cd_paused)) {
+            write_block(buf, p, sizeof p);
+            ret = (ret & 0xFFFFFF00u) | 0;
+            return;
+        }
         if (!(cd.playing || cd_paused)) {
             const auto& tr = disc.tracks();
-            // THE TRACK ULTIMA II PLAYS. Measured 2026-11-07 on the original with the fork's CD audio log: when Ultima II runs, the
-            // CD BIOS has already started CDDAPLAY 06:43:00 to 08:06:74 from 0256:000027C9, which is LBA 30225 to 36524, exactly
-            // track 5 of this disc. Answering with the first audio track instead plays the trilogy's spoken introduction, which is
-            // track 2, and that is a different piece of music.
+            // THE TRACK ULTIMA II PLAYS, AND WHY THIS IS A SUBSTITUTION RATHER THAN MACHINE BEHAVIOUR.
             //
-            // The number is this disc's layout, not a rule. Track 5 is measured for Ultima II only: what the launcher chooses for
-            // Ultima I and III has not been measured, and this port boots ENCHANT.EXP directly rather than through the launcher, so
-            // it has no other source for the answer.
+            // Measured on the original with the fork's CD audio log: the program itself asks for CDDAPLAY 06:43:00 to 08:06:74, which
+            // is LBA 30225 to 36524, exactly track 5 of this disc. The call stack at that start is 000C:000E093A then 0256:000027B9,
+            // so the caller is the game and not the launcher. Answering with the first audio track instead plays the trilogy's spoken
+            // introduction, which is track 2.
+            //
+            // What makes this a substitution: the program builds a parameter block and asks the CD BIOS for a track, and this port's
+            // int 93h services are hand-written and do not understand that block. Measured with U2_CD_NOFALLBACK=1, which restores the
+            // documented behaviour of answering zeros while nothing has played: the splash is silent. So the music in this port comes
+            // from this reply supplying a range, not from the program's own request being understood.
+            //
+            // Track 5 is this disc's layout for Ultima II only. The real fix is to model the CD controller and let the recompiled
+            // BIOS interpret the program's own request, which would make this function unnecessary.
             uint32_t begin = 0, finish = 0;
             for (const auto& t : tr)
                 if (t.number == 5) {
