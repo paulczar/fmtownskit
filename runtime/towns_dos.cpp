@@ -765,9 +765,24 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             return;
         }
         std::vector<uint8_t> o(6 + 3 * t.size());
-        o[0] = 3;                                   // as RUN386's buffer held it (*not understood*)
-        o[1] = (uint8_t)t.front().number;
-        o[2] = (uint8_t)t.back().number;
+        // The header's first byte, which RUN386's buffer held as 3 and which was never understood. The program's
+        // own parser at 0xE06C0 reads three header bytes into three fields and decrements the third, which reads
+        // as (first, last, count) rather than as a leading magic byte. Under that reading the recorded header says
+        // first track 3 and last track 1, a negative count, and it is the one thing that differs between the splash,
+        // which asks for the right range, and the Create Character screen, which does not.
+        //
+        // U2_TOC_HEADER=1 selects the (first, last, last) layout so the two can be compared on the screen that
+        // differs. This is an experiment with a stated outcome, not a fix: the item records what it should make the
+        // character screen ask for (09:52:00 to 11:44:74, or 44250 to 52724 after the minus-150 correction).
+        if (std::getenv("U2_TOC_HEADER")) {
+            o[0] = (uint8_t)t.front().number;
+            o[1] = (uint8_t)t.back().number;
+            o[2] = (uint8_t)t.back().number;
+        } else {
+            o[0] = 3;                               // as RUN386's buffer held it (*not understood*)
+            o[1] = (uint8_t)t.front().number;
+            o[2] = (uint8_t)t.back().number;
+        }
         to_msf_bcd(t.back().lba() + t.back().sectors, &o[3]);
         for (size_t k = 0; k < t.size(); ++k) {
             to_msf_bcd(t[k].lba(), &o[6 + 3 * k]);
