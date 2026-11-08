@@ -323,20 +323,37 @@ void Machine::int21(X86Cpu& c) {
             return;
         }
         case 0x11: {                                // issue a real-mode interrupt: the block at DS:EDX
+            // MEASURED, docs/audio-playback.md 9.9. The block holds the interrupt number at +0, the
+            // segment to load into DS at +2, and a real-mode stack pointer at +0xA: 0x50C0 on one
+            // path and 0x54C0 on the other, differing only in the high byte. The caller puts the
+            // buffer offset in EDI, so the target the interrupt sees is (segment << 4) + EDI.
+            //
+            // The word at +0xA is NOT a register image. Calling it AH=0x50, AL=0xC0 was a guess, and
+            // the ROM dispatcher at FMT_SYS.ROM 0x3C795 selects on the high nibble of the buffer's
+            // first byte instead, so 0xC0 would land on its default branch. It is still passed to
+            // int93 and written back because the port's CD service dispatches on it, and that is
+            // recorded here as a substitution rather than presented as the BIOS's interface.
             uint32_t blk = ds + c.r[2];
             uint32_t num = mem_read(blk, 2);
             uint32_t rds = mem_read(blk + 2, 2), res = mem_read(blk + 4, 2);
-            uint32_t eax = mem_read(blk + 0xA, 4), edx = mem_read(blk + 0xE, 4);
+            uint32_t ss_sp = mem_read(blk + 0xA, 4), edx = mem_read(blk + 0xE, 4);
             if (num != 0x93) {
                 char why[64];
                 std::snprintf(why, sizeof why, "real-mode int %02Xh through 2511h: no service", num);
                 x86_fault(c, c.eip, why);
             }
+            const uint32_t target = rds * 16 + (c.r[7] & 0xFFFF);
+            if (trace_int) {
+                std::fprintf(stderr, "  real-mode int 93h: block %05X ds %04X ss:sp %04X target %05X bytes", blk, rds,
+                             ss_sp, target);
+                for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %02X", mem_read(target + i, 1));
+                std::fprintf(stderr, "\n");
+            }
             uint32_t save_edx = c.r[2];
             c.r[2] = edx;
-            uint32_t ret = eax;
+            uint32_t ret = ss_sp;
             (void)res;
-            int93(c, eax, ret, rds * 16 + (c.r[7] & 0xFFFF));
+            int93(c, ss_sp, ret, target);
             mem_write(blk + 0xA, 4, ret);
             c.r[0] = ret;
             c.r[2] = save_edx;
