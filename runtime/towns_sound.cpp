@@ -428,7 +428,16 @@ void Machine::sound_out8(uint32_t port, uint8_t d) {
         case 3: c.step = (uint16_t)((c.step & 0x00FF) | (d << 8)); break;
         case 4: c.loopst = (uint16_t)((c.loopst & 0xFF00) | d); break;
         case 5: c.loopst = (uint16_t)((c.loopst & 0x00FF) | (d << 8)); break;
-        case 6: c.start = d; c.wraps = 0; if (!c.on) c.addr = (uint32_t)c.start << (8 + 11); break;
+        case 6:
+            // A START WRITE RESETS THE ADDRESS, whether or not the channel is enabled. The old guard here was `if (!c.on)`, which dropped every
+            // retrigger that arrived while the previous sound was still playing. Measured 2026-11-09 on the original with TSG_IO_TRACE: channel 7
+            // takes 36 start writes, all `4F6=E0`, so a sound effect is re-triggered in software rather than looped in hardware, and a sound the
+            // game plays several times in quick succession lost all but the first (plan item 5q). The fight sound is one retrigger and was never
+            // affected, which is why only the moongate played once.
+            c.start = d;
+            c.wraps = 0;
+            c.addr = (uint32_t)c.start << (8 + 11);
+            break;
         }
         return;
     }
