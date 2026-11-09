@@ -646,6 +646,16 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         cd_play(from_msf(p), from_msf(p + 3));
         cd_paused = false;
         cd.repeat = c.r[1] & 0xFF;
+        // The program's own track table, which the original builds at linear 0x400CE0 and reads with an immediate DS address at
+        // 0xE08D9 as [edi + edi*2 + 0xCE0]. Printing it beside the request answers whether the program picked a range from its own
+        // table or echoed the one the position service just gave it. That distinction is the whole of the remaining question in
+        // plan item 5p, and it cannot be told from the request alone because both produce a valid-looking range.
+        if (trace_int) {
+            const uint32_t tbl = profile->prog_base + 0xCE0;
+            std::fprintf(stderr, "  CD-DA table at %06X:", tbl);
+            for (int i = 0; i < 24; ++i) std::fprintf(stderr, " %02X", mem_read(tbl + i, 1));
+            std::fprintf(stderr, "\n");
+        }
         // The request's six raw bytes as well as the decoded range. A splash that plays music on the original and not here is either
         // a request this port never receives or a request it decodes wrongly, and the two are indistinguishable from the decoded
         // MSF alone: a range that decodes to zero looks the same whether the argument was zeros or a different encoding entirely.
