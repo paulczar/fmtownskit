@@ -588,6 +588,16 @@ static uint32_t from_msf(const uint8_t* p) {
 
 void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
     uint8_t ah = (eax >> 8) & 0xFF, al = eax & 0xFF;
+    // THE BUFFER THE PROGRAM ACTUALLY OWNS. Phar Lap's 250Fh turns a protected-mode address into a real-mode one, and this port
+    // implements it by subtracting the program's base and adding the profile's `prog_phys`, which is a window the port reserves for
+    // the purpose. Nothing maps that window onto the program's frames, so a reply written at 0x76BA4 was written to a copy the
+    // program never read: measured 2026-11-09, the table of contents landed at 0x76BA4 while the program's own 0x400BA4 stayed zero,
+    // and the program then filled its track table from zeros (docs/audio-playback.md 9.15). One translation here covers every service,
+    // because every service reads and writes through this one address.
+    {
+        const Profile& pr = *profile;
+        if (buf >= pr.prog_phys && buf < pr.prog_phys + 0x100000) buf = pr.prog_base + (buf - pr.prog_phys);
+    }
     if (trace_int) {
         std::fprintf(stderr, "int 93h AX=%04X CX=%04X BX=%04X buffer %05x", eax & 0xFFFF, c.r[1] & 0xFFFF,
                      c.r[3] & 0xFFFF, buf);
@@ -805,12 +815,30 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             o[1] = (uint8_t)t.front().number;
             o[2] = (uint8_t)t.back().number;
         }
-        to_msf_bcd(t.back().lba() + t.back().sectors, &o[3]);
+        // BINARY, not BCD. The note above to_msf records that the oracle's real-mode buffer held binary MSF with the lead-in
+        // after AH=54h, and the program copies these bytes into its own table verbatim: measured 2026-11-09, a BCD reply gave the
+        // table BCD entries and the program then asked to play 09 52 00, and a binary reply gives 06 45 00 for the same track, which
+        // is what the original asks for (docs/audio-playback.md 9.15).
+        to_msf(t.back().lba() + t.back().sectors, &o[3]);
         for (size_t k = 0; k < t.size(); ++k) {
-            to_msf_bcd(t[k].lba(), &o[6 + 3 * k]);
+            to_msf(t[k].lba(), &o[6 + 3 * k]);
             if (!t[k].audio) o[6 + 3 * k] |= 0x80;
         }
         write_block(buf, o.data(), (uint32_t)o.size());
+        // THE ALIAS CHECK, added 2026-11-09. The program parses this reply at its own 0xBA4 and copies the result into its track
+        // table at 0xCE0, and the table came out all zeros while this reply is correct. The suspect is that the buffer the reply is
+        // written to, DS:DI through the 2511h segment, is not the memory the program reads as 0xBA4. Printing both sides at the same
+        // instant settles it: the first eight bytes of the reply beside the first eight bytes the program would see.
+        if (trace_int) {
+            std::fprintf(stderr, "  CD-DA toc alias: reply");
+            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", o[(size_t)i]);
+            std::fprintf(stderr, "  at %06X:", buf);
+            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", mem_read(buf + i, 1));
+            const uint32_t lin = profile->prog_base + 0xBA4;
+            std::fprintf(stderr, "  program %06X:", lin);
+            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", mem_read(lin + i, 1));
+            std::fprintf(stderr, "\n");
+        }
         // The table the program is given, because the play range it asks for a few frames later is computed from this: a request
         // that arrives as 00:00:00 to 00:00:00 is what a caller sees when the table says all zeros, not when it fails to ask.
         if (trace_int) {
