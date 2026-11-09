@@ -572,14 +572,10 @@ static void to_msf(uint32_t lba, uint8_t* p) {
     p[0] = (uint8_t)(lba / (75 * 60)); p[1] = (uint8_t)(lba / 75 % 60); p[2] = (uint8_t)(lba % 75);
 }
 
-// The same three fields in BCD, which is what the CD controller's own TOC reply carries: the emulator's SetStatusQueueForTOC passes
-// every value through BinToBCD. Whether the BIOS hands them on unchanged is the question this exists to answer, because the
-// program's play request came out as 00:00:00 to 00:00:00 while these fields were binary.
-static void to_msf_bcd(uint32_t lba, uint8_t* p) {
-    uint8_t bin[3];
-    to_msf(lba, bin);
-    for (int i = 0; i < 3; ++i) p[i] = (uint8_t)(((bin[i] / 10) << 4) | (bin[i] % 10));
-}
+// BCD WAS TRIED AND MEASURED WRONG, recorded here rather than left as dead code. The CD controller's own table of contents holds BCD,
+// and the emulator's SetStatusQueueForTOC passes every value through BinToBCD, so sending BCD looked right. It is not what the BIOS hands
+// the program: with a BCD reply the program's table at 0xCE0 held BCD entries and it asked to play 09 52 00 where the binary form of the
+// same track is 06 45 00, and the requested range came out 46500 instead of 44250. The reply is binary, as to_msf writes it.
 
 static uint32_t from_msf(const uint8_t* p) {
     uint32_t f = ((uint32_t)(p[0] & 0x7F) * 60 + p[1]) * 75 + p[2];
@@ -696,50 +692,14 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
         // U2_CD_NOFALLBACK=1 restores the plain answer, zeros while nothing has played, so the fallback's contribution can be
         // measured instead of assumed. It exists because the fallback was introduced together with the BCD table of contents and
         // the credit for the splash music was given to the wrong one of the two.
-        static const bool no_fallback = std::getenv("U2_CD_NOFALLBACK") != nullptr;
-        if (no_fallback && !(cd.playing || cd_paused)) {
-            write_block(buf, p, sizeof p);
-            ret = (ret & 0xFFFFFF00u) | 0;
-            return;
-        }
+        // The FIRST SIX BYTES ARE THE PLAY RANGE. Measured 2026-11-06, and the reason the answer matters: the program asks this service
+        // and then hands this very buffer back as a play range, so zeros here become a request to play nothing.
         if (!(cd.playing || cd_paused)) {
-            const auto& tr = disc.tracks();
-            // THE TRACK ULTIMA II PLAYS, AND WHY THIS IS A SUBSTITUTION RATHER THAN MACHINE BEHAVIOUR.
-            //
-            // Measured on the original with the fork's CD audio log: the program itself asks for CDDAPLAY 06:43:00 to 08:06:74, which
-            // is LBA 30225 to 36524, exactly track 5 of this disc. The call stack at that start is 000C:000E093A then 0256:000027B9,
-            // so the caller is the game and not the launcher. Answering with the first audio track instead plays the trilogy's spoken
-            // introduction, which is track 2.
-            //
-            // What makes this a substitution: the program builds a parameter block and asks the CD BIOS for a track, and this port's
-            // int 93h services are hand-written and do not understand that block. Measured with U2_CD_NOFALLBACK=1, which restores the
-            // documented behaviour of answering zeros while nothing has played: the splash is silent. So the music in this port comes
-            // from this reply supplying a range, not from the program's own request being understood.
-            //
-            // Track 5 is this disc's layout for Ultima II only. The real fix is to model the CD controller and let the recompiled
-            // BIOS interpret the program's own request, which would make this function unnecessary.
-            uint32_t begin = 0, finish = 0;
-            for (const auto& t : tr)
-                if (t.number == 5) {
-                    begin = t.lba();
-                    finish = t.lba() + t.sectors;
-                    break;
-                }
-            if (!begin)
-                for (const auto& t : tr)
-                    if (t.audio) {
-                        begin = t.lba();
-                        finish = t.lba() + t.sectors;
-                        break;
-                    }
-            // to_msf, not a local lambda: it adds the 150-sector lead-in that every MSF on this machine carries, and the play
-            // request is decoded by subtracting it again. Without it the range came out 150 sectors early, which is the pregap,
-            // where there is no audio track and the first two seconds are silence.
-            if (!finish) finish = tr.empty() ? 0u : tr.back().lba() + tr.back().sectors;
-            to_msf(begin, p);
-            to_msf(finish, p + 3);
-            if (trace_int)
-                std::fprintf(stderr, "  CD-DA position: nothing playing, answering %u to the end of the disc\n", begin);
+            // NOTHING IS PLAYING, so the honest answer is zeros. This used to answer with track 5 instead, as a substitution, because
+            // the program's own table of contents never reached it. That is fixed: the 2511h buffer now maps onto the program's memory
+            // and the table of contents is sent in the format the program expects, so the program fills its own table at 0xCE0 and asks
+            // for the range it wants. Measured 2026-11-09 with the substitution disabled: the ranges on the create route are identical
+            // with and without it, so the substitution answered for the program and is removed (docs/audio-playback.md 9.15).
             write_block(buf, p, sizeof p);
             ret = (ret & 0xFFFFFF00u) | 0;
             return;
