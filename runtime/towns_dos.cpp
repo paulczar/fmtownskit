@@ -335,8 +335,8 @@ void Machine::int21(X86Cpu& c) {
             // recorded here as a substitution rather than presented as the BIOS's interface.
             uint32_t blk = ds + c.r[2];
             uint32_t num = mem_read(blk, 2);
-            uint32_t rds = mem_read(blk + 2, 2), res = mem_read(blk + 4, 2);
-            uint32_t ss_sp = mem_read(blk + 0xA, 4), edx = mem_read(blk + 0xE, 4);
+            uint32_t rds = mem_read(blk + 2, 2);
+            uint32_t ss_sp = mem_read(blk + 0xA, 4);
             if (num != 0x93) {
                 char why[64];
                 std::snprintf(why, sizeof why, "real-mode int %02Xh through 2511h: no service", num);
@@ -349,14 +349,10 @@ void Machine::int21(X86Cpu& c) {
                 for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %02X", mem_read(target + i, 1));
                 std::fprintf(stderr, "\n");
             }
-            uint32_t save_edx = c.r[2];
-            c.r[2] = edx;
             uint32_t ret = ss_sp;
-            (void)res;
             int93(c, ss_sp, ret, target);
             mem_write(blk + 0xA, 4, ret);
             c.r[0] = ret;
-            c.r[2] = save_edx;
             return;
         }
         default: break;
@@ -757,24 +753,13 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             return;
         }
         std::vector<uint8_t> o(6 + 3 * t.size());
-        // The header's first byte, which RUN386's buffer held as 3 and which was never understood. The program's
-        // own parser at 0xE06C0 reads three header bytes into three fields and decrements the third, which reads
-        // as (first, last, count) rather than as a leading magic byte. Under that reading the recorded header says
-        // first track 3 and last track 1, a negative count, and it is the one thing that differs between the splash,
-        // which asks for the right range, and the Create Character screen, which does not.
-        //
-        // U2_TOC_HEADER=1 selects the (first, last, last) layout so the two can be compared on the screen that
-        // differs. This is an experiment with a stated outcome, not a fix: the item records what it should make the
-        // character screen ask for (09:52:00 to 11:44:74, or 44250 to 52724 after the minus-150 correction).
-        if (std::getenv("U2_TOC_HEADER")) {
-            o[0] = (uint8_t)t.front().number;
-            o[1] = (uint8_t)t.back().number;
-            o[2] = (uint8_t)t.back().number;
-        } else {
-            o[0] = 3;                               // as RUN386's buffer held it (*not understood*)
-            o[1] = (uint8_t)t.front().number;
-            o[2] = (uint8_t)t.back().number;
-        }
+        // The header's first byte. RUN386's buffer held 3 here and the reason was never established. It was tested against a
+        // (first, last, count) reading of the program's parser at 0xE06C0, which sends 01 08 08 instead, and the Create Character
+        // request came back byte for byte identical, so the header is not what decides that screen and the alternative is gone
+        // (docs/audio-playback.md 9.14).
+        o[0] = 3;                                   // as RUN386's buffer held it (*not understood*)
+        o[1] = (uint8_t)t.front().number;
+        o[2] = (uint8_t)t.back().number;
         // BINARY, not BCD. The note above to_msf records that the oracle's real-mode buffer held binary MSF with the lead-in
         // after AH=54h, and the program copies these bytes into its own table verbatim: measured 2026-11-09, a BCD reply gave the
         // table BCD entries and the program then asked to play 09 52 00, and a binary reply gives 06 45 00 for the same track, which
@@ -785,20 +770,6 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             if (!t[k].audio) o[6 + 3 * k] |= 0x80;
         }
         write_block(buf, o.data(), (uint32_t)o.size());
-        // THE ALIAS CHECK, added 2026-11-09. The program parses this reply at its own 0xBA4 and copies the result into its track
-        // table at 0xCE0, and the table came out all zeros while this reply is correct. The suspect is that the buffer the reply is
-        // written to, DS:DI through the 2511h segment, is not the memory the program reads as 0xBA4. Printing both sides at the same
-        // instant settles it: the first eight bytes of the reply beside the first eight bytes the program would see.
-        if (trace_int) {
-            std::fprintf(stderr, "  CD-DA toc alias: reply");
-            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", o[(size_t)i]);
-            std::fprintf(stderr, "  at %06X:", buf);
-            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", mem_read(buf + i, 1));
-            const uint32_t lin = profile->prog_base + 0xBA4;
-            std::fprintf(stderr, "  program %06X:", lin);
-            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %02X", mem_read(lin + i, 1));
-            std::fprintf(stderr, "\n");
-        }
         // The table the program is given, because the play range it asks for a few frames later is computed from this: a request
         // that arrives as 00:00:00 to 00:00:00 is what a caller sees when the table says all zeros, not when it fails to ask.
         if (trace_int) {
