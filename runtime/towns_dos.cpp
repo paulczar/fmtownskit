@@ -725,11 +725,23 @@ void Machine::int93(X86Cpu& c, uint32_t eax, uint32_t& ret, uint32_t buf) {
             return;
         }
         {
+            // THE SAME SIX BYTES AS THE FALLBACK BRANCH, because the consumer treats them as one thing. The program
+            // asks for a position and then hands this buffer back as a play range, reading [0..2] as the start and
+            // [3..5] as the end. The fallback branch already writes exactly that, and this branch used to write the
+            // oracle's layout instead, with the track number at [1]. At the Create Character screen that made the
+            // request read as 00 05 00 to 00 06 00, the track number appearing as the start time's seconds. Measured
+            // in docs/audio-playback.md 9.14.
+            //
+            // The oracle's trace recorded [1] as the track number and [3..5] as the position within the play, which
+            // cannot both be true alongside a range in [0..5]. The range wins here because the program is the
+            // consumer that was actually observed reusing the buffer, and the observation of a track number at [1]
+            // may have been of a buffer the program had already rewritten.
+            to_msf(cd.from, p);
+            to_msf(cd.to, p + 3);
             auto msf = [](uint32_t f, uint8_t* q) { q[0] = (uint8_t)(f / 4500); q[1] = (uint8_t)(f / 75 % 60); q[2] = (uint8_t)(f % 75); };
-            for (const auto& t : disc.tracks())
-                if (s >= t.lba()) p[1] = (uint8_t)t.number;
-            msf(s - cd.from, p + 3);
             msf(s, p + 7);
+            if (trace_int)
+                std::fprintf(stderr, "  CD-DA position: playing, answering range %u to %u and disc sector %u\n", cd.from, cd.to, s);
         }
         write_block(buf, p, sizeof p);
         ret = (ret & 0xFFFFFF00u) | (cd.playing ? 1 : 0);
