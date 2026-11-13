@@ -32,6 +32,17 @@ struct SdlOptions {
     // source pixel is the same size on screen. Letterbox fills whatever the window is and keeps the aspect ratio,
     // which trades even pixels for a full window.
     bool letterbox = false;
+    // HOW THE PICTURE IS SAMPLED when it is not an exact whole multiple. Nearest gives some source rows one screen
+    // pixel and some two, which is what a 640x400 game looks like at 1000x750. PixelArt is SDL's own scaler for this
+    // case, new in SDL 3.4: nearest behaviour with the unevenness smoothed out. Linear blurs. The kit carries its own
+    // enum so this header does not depend on SDL's.
+    enum class ScaleMode { Nearest, PixelArt, Linear };
+    ScaleMode scale_mode = ScaleMode::Nearest;
+    // WHICH SDL RENDERER BACKEND, by the name SDL knows it by: "gpu", "opengl", "vulkan", "software", "direct3d",
+    // and so on. Empty lets SDL choose, which is what it has always done. It matters because PIXELART is implemented
+    // in the shader backends only, so on a software fallback it degrades to nearest and looks identical — measured on
+    // the Ultima II title at 1000x750, 2026-11-13, and the reason this option exists.
+    std::string renderer;
 };
 
 // The whole-multiple scale a window of this size rounds to, for the default presentation. Integer scaling on its own
@@ -50,6 +61,8 @@ public:
     ~SdlHost();
     bool open(const SdlOptions& o, std::string& err);
     void vsync(Machine& m);         // throws Stop{0} when the window is closed
+    // The backend SDL actually gave us, for a log line that names it. Null before open() and after close().
+    const char* renderer_name() const;
     // PATCH, this repository: the host's keystrokes as the Towns' own (scan code, ASCII), so a program that
     // reads the keyboard through int 90h can be typed into. The front-end otherwise maps keys only to the pad,
     // which is right for the games it was built for and useless for a program waiting on KYB_read. Unset means

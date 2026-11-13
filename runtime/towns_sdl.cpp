@@ -21,6 +21,10 @@ struct SdlHost::Impl {
     uint64_t next_ns = 0;                   // the pace without sound: the next frame's time
     std::string title;
     bool letterbox = false;                 // fill the window instead of snapping it to whole multiples
+    SdlOptions::ScaleMode scale_mode = SdlOptions::ScaleMode::Nearest;
+    // The canvas-to-window factor for the frame just drawn, kept so the mouse can be put back into frame pixels. It is
+    // 0 until the first frame, which is why the motion handler guards on it.
+    float canvas_scale = 0.0f;
     bool resize_pending = false;            // a resize happened and the window has not settled yet
     uint64_t resize_ms = 0;                 // when it last moved, so the snap waits for the drag to finish
     int shown_rate = 0;                     // the CPU's rate the title shows
@@ -38,11 +42,18 @@ struct SdlHost::Impl {
 SdlHost::SdlHost() = default;
 SdlHost::~SdlHost() = default;
 
+const char* SdlHost::renderer_name() const {
+    if (!p_ || !p_->ren) return "";
+    const char* n = SDL_GetRendererName(p_->ren);
+    return n ? n : "";
+}
+
 bool SdlHost::open(const SdlOptions& o, std::string& err) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) { err = SDL_GetError(); return false; }
     p_ = std::make_unique<Impl>();
     p_->title = o.title;
     p_->letterbox = o.letterbox;
+    p_->scale_mode = o.scale_mode;
     int w = 640, h = 480, scale = o.scale;
     if (scale <= 0) {
         SDL_Rect r;
@@ -50,11 +61,21 @@ bool SdlHost::open(const SdlOptions& o, std::string& err) {
         if (SDL_GetDisplayUsableBounds(SDL_GetPrimaryDisplay(), &r))
             while (w * (scale + 1) <= r.w && h * (scale + 1) + 40 <= r.h) ++scale;
     }
-    if (!SDL_CreateWindowAndRenderer(o.title.c_str(), w * scale, h * scale, SDL_WINDOW_RESIZABLE, &p_->win, &p_->ren)) {
+    p_->win = SDL_CreateWindow(o.title.c_str(), w * scale, h * scale, SDL_WINDOW_RESIZABLE);
+    if (!p_->win) {
         err = SDL_GetError();
         return false;
     }
-    if (o.fullscreen) SDL_SetWindowFullscreen(p_->win, true);
+    // WHICH BACKEND. Named when the caller has one in mind, because `gpu` is how you reach SDL's shader backends, and
+    // those are the only ones that implement SDL_SCALEMODE_PIXELART: on the software fallback the mode degrades to
+    // nearest and looks identical, measured on the Ultima II title at 1000x750 on 2026-11-13. A request that cannot be
+    // granted falls back to SDL's choice, because a window with a lesser renderer beats no window.
+    p_->ren = SDL_CreateRenderer(p_->win, o.renderer.empty() ? nullptr : o.renderer.c_str());
+    if (!p_->ren && !o.renderer.empty()) p_->ren = SDL_CreateRenderer(p_->win, nullptr);
+    if (!p_->ren) {
+        err = SDL_GetError();
+        return false;
+    }    if (o.fullscreen) SDL_SetWindowFullscreen(p_->win, true);
     SDL_AudioSpec spec{SDL_AUDIO_S16, 2, kAudioRate};
     p_->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (p_->audio) SDL_ResumeAudioStreamDevice(p_->audio);
@@ -223,10 +244,12 @@ void SdlHost::vsync(Machine& m) {
             }
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            // the frame's pixels moved, as the mouse in the second port's counts
-            SDL_ConvertEventToRenderCoordinates(s.ren, &e);
-            s.mx += e.motion.xrel;
-            s.my += e.motion.yrel;
+            // The frame's pixels moved, as the mouse in the second port's counts. With no logical presentation the
+            // delta arrives in window pixels, so it is divided by the canvas scale to become frame pixels again.
+            if (s.canvas_scale > 0.0f) {
+                s.mx += e.motion.xrel / s.canvas_scale;
+                s.my += e.motion.yrel / s.canvas_scale;
+            }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP: {
             uint8_t bit = e.button.button == SDL_BUTTON_LEFT ? 0x10 : e.button.button == SDL_BUTTON_RIGHT ? 0x20 : 0;
@@ -278,20 +301,35 @@ void SdlHost::vsync(Machine& m) {
     m.render(s.rgb, fw, fh);
     m.display_area(x, y, w, h);
     int cw = std::max(w, 640), ch = std::max(h, 480);
+    // THE CANVAS IS SCALED HERE, not by SDL's logical presentation. Logical presentation would do the arithmetic for
+    // us and it also ignores the texture's scale mode, so `SDL_SCALEMODE_PIXELART` had no effect on the final upscale
+    // at all: measured 2026-11-13 on the Ultima II title at 1000x750, nearest and pixelart gave byte-identical frames.
+    // Blitting the picture into the window ourselves puts the sampling back under the scale mode's control. The cost is
+    // the mouse: with no logical coordinates, a motion delta arrives in window pixels and is divided by the scale.
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(s.win, &ww, &wh);
+    float k;
+    if (s.letterbox) {
+        k = std::min((float)ww / (float)cw, (float)wh / (float)ch);
+    } else {
+        int whole = std::min(ww / cw, wh / ch);
+        k = (float)std::max(1, whole);
+    }
+    s.canvas_scale = k;
     if (w != s.tw || h != s.th) {
         if (s.tex) SDL_DestroyTexture(s.tex);
         s.tex = SDL_CreateTexture(s.ren, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
-        SDL_SetTextureScaleMode(s.tex, SDL_SCALEMODE_NEAREST);
-        // The mode follows the option: whole multiples by default, letterbox when asked for. The window snapping above
-        // keeps an integer-scaled picture filling its window, so this only has to pick the mode.
-        SDL_SetRenderLogicalPresentation(s.ren, cw, ch, s.letterbox ? SDL_LOGICAL_PRESENTATION_LETTERBOX
-                                                                  : SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
+        SDL_SetTextureScaleMode(s.tex, s.scale_mode == SdlOptions::ScaleMode::PixelArt ? SDL_SCALEMODE_PIXELART
+                                        : s.scale_mode == SdlOptions::ScaleMode::Linear ? SDL_SCALEMODE_LINEAR
+                                                                                      : SDL_SCALEMODE_NEAREST);
         s.tw = w; s.th = h;
     }
     SDL_UpdateTexture(s.tex, nullptr, s.rgb.data() + (size_t)y * fw + x, fw * 4);
     SDL_SetRenderDrawColor(s.ren, 0, 0, 0, 255);
     SDL_RenderClear(s.ren);
-    SDL_FRect dst{(float)((cw - w) / 2), (float)((ch - h) / 2), (float)w, (float)h};
+    // The canvas centred in the window, and the picture centred in the canvas, both at the same scale.
+    SDL_FRect dst{(float)((ww - cw * k) / 2 + (cw - w) * k / 2), (float)((wh - ch * k) / 2 + (ch - h) * k / 2),
+                  (float)(w * k), (float)(h * k)};
     SDL_RenderTexture(s.ren, s.tex, nullptr, &dst);
     SDL_RenderPresent(s.ren);
 
