@@ -48,6 +48,9 @@ extern uint32_t g_trace_far_sel;          // log far transfers into this selecto
 extern uint32_t g_trace_far_all;          // log that many transfers individually rather than once per site; 0 is off
 extern uint32_t g_far_eax;                // EAX of the last traced transfer, printed beside a watched write
 extern uint32_t g_trace_fn_cs, g_trace_fn_lo, g_trace_fn_hi;  // log entries into one code range, deduped
+// How many stack dwords to print after the registers for each traced entry. 0 is the old line exactly, so this
+// costs nothing unless a caller asks for it: `U2_TRACE_FN_ARGS=<n>` in the port.
+extern uint32_t g_trace_fn_args;
 extern uint32_t g_trace_fn_dump_off, g_trace_fn_dump_len;     // dump state at the first traced entry
 extern uint32_t g_trace_fn_dump_frame;                        // ... at or after this frame
 extern const char* g_trace_fn_dump_path;

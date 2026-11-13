@@ -10,6 +10,7 @@
 #include "towns.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <cstdio>
 #include <set>
 #include <utility>
@@ -21,6 +22,11 @@ uint32_t g_trace_far_sel = 0;
 uint32_t g_trace_far_all = 0;
 uint32_t g_far_eax = 0;
 uint32_t g_trace_fn_cs = 0, g_trace_fn_lo = 0, g_trace_fn_hi = 0;
+// How many stack dwords to print for each traced entry. 0 keeps the line exactly as it was, so every existing
+// reader of this output is unaffected. Added for the dungeon brief: the blit wrapper takes its arguments on the
+// stack (`push descriptor; push 0; push table`), so registers alone can show that a routine ran but not what it
+// was asked to draw.
+uint32_t g_trace_fn_args = 0;
 uint32_t g_trace_fn_dump_off = 0, g_trace_fn_dump_len = 0;
 uint32_t g_trace_fn_dump_frame = 0;
 const char* g_trace_fn_dump_path = nullptr;
@@ -49,10 +55,23 @@ void x86_fn_trace_enter(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
           && off <= g_trace_fn_hi))
         return;
     static long entries = 0;
-    if (++entries <= (long)g_watch_max)
-        std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x\n",
+    if (++entries <= (long)g_watch_max) {
+        std::fprintf(stderr, "fn        %04x:%08x from %08x f%llu eax %08x ebx %08x ecx %08x edx %08x esi %08x edi %08x ebp %08x es %08x ds %08x gs %08x",
                      cs, off, site, (unsigned long long)(g_towns ? g_towns->frame : 0), c.r[0], c.r[3], c.r[1], c.r[2],
                      c.r[6], c.r[7], c.r[5], c.sbase[0], c.sbase[3], c.sbase[5]);
+        // The stack, when asked for. esp points at the return address, so the first word is the caller and the
+        // arguments are the ones after it. A short read is possible at a segment edge and then the rest is zero.
+        if (g_trace_fn_args && g_towns) {
+            std::vector<uint8_t> words((size_t)g_trace_fn_args * 4, 0);
+            g_towns->read_block(c.sbase[2] + c.r[4], words.data(), words.size());
+            for (uint32_t i = 0; i < g_trace_fn_args; i++) {
+                uint32_t w = 0;
+                std::memcpy(&w, words.data() + (size_t)i * 4, 4);
+                std::fprintf(stderr, " s%u=%08x", i, w);
+            }
+        }
+        std::fprintf(stderr, "\n");
+    }
     // Dump the routine's state at the same instant the machine's breakpoint fires, so a comparison of two samples is a
     // comparison of the same moment. Done once: a per-call dump is a file per iteration and no more truth.
     static bool dumped = false;
