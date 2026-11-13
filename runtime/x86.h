@@ -51,6 +51,8 @@ extern uint32_t g_trace_fn_cs, g_trace_fn_lo, g_trace_fn_hi;  // log entries int
 // How many stack dwords to print after the registers for each traced entry. 0 is the old line exactly, so this
 // costs nothing unless a caller asks for it: `U2_TRACE_FN_ARGS=<n>` in the port.
 extern uint32_t g_trace_fn_args;
+// Bytes at a fixed linear address, printed with every traced entry: `U2_TRACE_FN_MEM=<hex addr>:<hex len>`.
+extern uint32_t g_trace_fn_mem_addr, g_trace_fn_mem_len;
 extern uint32_t g_trace_fn_dump_off, g_trace_fn_dump_len;     // dump state at the first traced entry
 extern uint32_t g_trace_fn_dump_frame;                        // ... at or after this frame
 extern const char* g_trace_fn_dump_path;

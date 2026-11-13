@@ -27,6 +27,10 @@ uint32_t g_trace_fn_cs = 0, g_trace_fn_lo = 0, g_trace_fn_hi = 0;
 // stack (`push descriptor; push 0; push table`), so registers alone can show that a routine ran but not what it
 // was asked to draw.
 uint32_t g_trace_fn_args = 0;
+// A fixed linear address whose bytes are printed with every traced entry. Added for the dungeon brief: the blit's
+// arguments are a pointer to a descriptor that is rebuilt before each call, so the picture is in the bytes that
+// pointer names and not in the registers. 0 disables it, and the line stays as it was.
+uint32_t g_trace_fn_mem_addr = 0, g_trace_fn_mem_len = 0;
 uint32_t g_trace_fn_dump_off = 0, g_trace_fn_dump_len = 0;
 uint32_t g_trace_fn_dump_frame = 0;
 const char* g_trace_fn_dump_path = nullptr;
@@ -68,6 +72,18 @@ void x86_fn_trace_enter(X86Cpu& c, uint16_t cs, uint32_t off, uint32_t site) {
                 uint32_t w = 0;
                 std::memcpy(&w, words.data() + (size_t)i * 4, 4);
                 std::fprintf(stderr, " s%u=%08x", i, w);
+            }
+        }
+        // Bytes at a fixed linear address, when asked for. Same reasoning as the stack words: for a routine whose
+        // arguments are pointers, this is the only way the trace shows what was actually drawn.
+        if (g_trace_fn_mem_len && g_towns) {
+            std::vector<uint8_t> mem(g_trace_fn_mem_len, 0);
+            g_towns->read_block(g_trace_fn_mem_addr, mem.data(), mem.size());
+            std::fprintf(stderr, " mem");
+            for (uint32_t i = 0; i + 4 <= g_trace_fn_mem_len; i += 4) {
+                uint32_t w = 0;
+                std::memcpy(&w, mem.data() + i, 4);
+                std::fprintf(stderr, " %08x", w);
             }
         }
         std::fprintf(stderr, "\n");
